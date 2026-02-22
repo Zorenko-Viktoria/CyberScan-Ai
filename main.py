@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse, Response 
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, JSONResponse
 from urllib.parse import unquote
@@ -346,6 +347,10 @@ async def home(request: Request):
         "recent_scans": recent_scans
     })
 
+@app.head("/")
+async def head_home():
+    return Response(status_code=200)
+
 @app.get("/check/{url:path}", response_class=HTMLResponse)
 async def check_site(request: Request, url: str):
     """Проверка одного сайта по URL"""
@@ -586,3 +591,4 @@ if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
