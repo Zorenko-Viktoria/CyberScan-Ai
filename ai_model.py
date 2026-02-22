@@ -299,8 +299,9 @@ class CyberScanAI:
         
         for i in range(num_samples):
             features = {}
+            casino_like = np.random.choice([0, 1], p=[0.5, 0.5])
             
-            if i < num_samples // 2: 
+            if i < num_samples // 3: 
                 features['domain_age_days'] = np.random.randint(365, 3650)
                 features['ssl_valid'] = 1
                 features['suspicious_tld'] = 0
@@ -316,9 +317,16 @@ class CyberScanAI:
                 features['ssl_valid'] = np.random.choice([0, 1], p=[0.7, 0.3])
                 features['suspicious_tld'] = np.random.choice([0, 1], p=[0.3, 0.7])
                 features['num_suspicious_patterns'] = np.random.randint(3, 10)
-                features['scam_word_count'] = np.random.randint(10, 50)
-                features['has_brand_impersonation'] = np.random.choice([0, 1], p=[0.4, 0.6])
-                features['num_forms'] = np.random.randint(1, 5)
+
+                if casino_like:
+                    features['scam_word_count'] = np.random.randint(20, 100)
+                    features['has_brand_impersonation'] = 1
+                    features['num_forms'] = np.random.randint(2, 8)
+                else:
+                    features['scam_word_count'] = np.random.randint(10, 50)
+                    features['has_brand_impersonation'] = np.random.choice([0, 1], p=[0.4, 0.6])
+                    features['num_forms'] = np.random.randint(1, 5)
+                
                 features['num_password_forms'] = np.random.choice([0, 1], p=[0.3, 0.7])
                 features['days_to_expiry'] = np.random.randint(1, 30)  
                 label = 1
@@ -653,4 +661,5 @@ if __name__ == "__main__":
     prediction = model.predict(test_result)
     print(f"Prediction: {prediction}")
     
+
     print("\n✅ AI Model ready!")
