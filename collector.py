@@ -58,7 +58,6 @@ class CyberScanCollector:
                     break
         return result
 
-    # 🔥 ИСПРАВЛЕННЫЙ детектор казино
     async def _detect_casino(self, soup, url):
         """Определение признаков онлайн-казино"""
         result = {
@@ -86,7 +85,6 @@ class CyberScanCollector:
         if found_keywords:
             result["indicators"] = found_keywords[:5]
             
-            # Определяем уверенность
             if len(found_keywords) >= 5:
                 result["confidence"] = "high"
                 result["is_casino"] = True
@@ -97,7 +95,6 @@ class CyberScanCollector:
                 result["confidence"] = "low"
                 result["is_casino"] = True
 
-        # Проверяем URL на признаки казино
         url_lower = url.lower()
         url_indicators = ['casino', 'казино', 'vulkan', '1x', 'pinu']
         for ind in url_indicators:
@@ -544,7 +541,6 @@ class CyberScanCollector:
                         f"Множественные редиректы ({len(redirects)})"
                     )
 
-                # 🔥 ДОБАВЛЯЕМ ДЕТЕКТОР КАЗИНО
                 casino_analysis = await self._detect_casino(soup, url)
                 result["casino_analysis"] = casino_analysis
                 if casino_analysis["is_casino"]:
