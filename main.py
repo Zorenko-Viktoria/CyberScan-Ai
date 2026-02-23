@@ -159,7 +159,6 @@ def prepare_result_for_template(result: dict) -> dict:
     whois_analysis = level1.get('whois_analysis', {})
     domain_age = whois_analysis.get('domain_age_days')
 
-    # 🔥 НОВОЕ: Анализ казино
     casino_analysis = deep_scan.get('casino_analysis', {})
     is_casino = casino_analysis.get('is_casino', False)
     casino_indicators = casino_analysis.get('indicators', [])
@@ -283,7 +282,6 @@ def prepare_result_for_template(result: dict) -> dict:
         else:
             negative_indicators["technical"].append(f"⚠️ {flag}")
 
-    # 🔥 НОВОЕ: Добавляем казино в негативные индикаторы
     if is_casino:
         if casino_confidence == 'high':
             negative_indicators["phishing"].append("🎰 ОНЛАЙН-КАЗИНО (высокая уверенность)")
@@ -295,7 +293,7 @@ def prepare_result_for_template(result: dict) -> dict:
             negative_indicators["phishing"].append("🎰 Возможные признаки казино")
             casino_risk_boost = 20
             
-        # Добавляем в фишинговые формы для отображения
+
         phishing_indicators["form_analysis"].append({
             "risk": "critical" if casino_confidence == "high" else "high",
             "has_password": False,
@@ -309,7 +307,7 @@ def prepare_result_for_template(result: dict) -> dict:
         casino_risk_boost = 0
     
     risk_score = level1.get('risk_score', 0)
-    risk_score = min(100, risk_score + casino_risk_boost)  # Добавляем бонус за казино
+    risk_score = min(100, risk_score + casino_risk_boost)  
     
     if risk_score < 30:
         status = "Safe"
@@ -443,25 +441,52 @@ async def scan_multiple(request: Request):
         "https://facebook.com",
         "https://youtube.com",
         "http://suspicious-site.xyz",
-        "https://github.com"
+        "https://github.com",
+        "https://www.wikipedia.org",
+        "https://www.kaspi.kz",
+
+        "http://lk-bank.online/kaspi-kz",
+        "http://kaspi.kz.secure-login.xyz",
+        "http://paypal-verification-center.com",
+        "http://apple-id-login.net",
+        "http://secure-account-verify.com",
+
+        "http://vulkan-777.com",
+        "http://joycasino-bonus.top",
+        "http://1xbet-zerkalo.ru",
+        "http://pinup-casino.website",
+        "http://casino-bez-depozita.ru",
+        "http://vulkan-platinum.com",
+        "http://azino777.online",
+
+        "http://super-prize.tk",
+        "http://double-your-money.ga",
+        "http://crypto-bonus.xyz",
+        "http://win-iphone.cf",
+
+        "http://guaranteed-profit.online",
+        "http://passive-income.work",
+        "http://get-rich-quick.trade",
     ]
     
     results = []
     
-    for site in sites_to_scan[:3]:  
+    for site in sites_to_scan:  
         try:
+            logger.info(f"Scanning {site}...")
             scan_result = await scan_url_async(site)
             result_for_template = prepare_result_for_template(scan_result)
             results.append(result_for_template)
         except Exception as e:
             logger.error(f"Error scanning {site}: {e}")
     
-    first_result = results[0] if results else None
+    results.sort(key=lambda x: x.get('risk', 0), reverse=True)
     
     return templates.TemplateResponse("index.html", {
         "request": request,
-        "result": first_result,
-        "multiple_results": results  
+        "result": results[0] if results else None,
+        "multiple_results": results,
+        "total_scanned": len(results)
     })
 
 @app.get("/api/check/{url:path}")
