@@ -1163,6 +1163,62 @@ h1 {
 </div>
 {% endif %}
 
+<!-- КАЗИНО АНАЛИЗ (новый блок) -->
+{% if result.casino_detected %}
+<div class="phishing-analysis" style="border-left: 4px solid #ff9800; margin-top: 20px;">
+    <h3><i class="fas fa-dice" style="color: #ff9800;"></i> Обнаружено онлайн-казино</h3>
+    
+    <div class="phishing-forms">
+        <div class="phishing-form-card critical" style="border-left-color: #ff9800; background: rgba(255, 152, 0, 0.05);">
+            <div class="form-header">
+                <span class="form-risk-badge critical" style="background: rgba(255, 152, 0, 0.2); color: #ff9800; border: 1px solid #ff9800;">
+                    {% if result.casino_confidence == 'high' %}
+                        🎰 КАЗИНО (ВЫСОКАЯ УВЕРЕННОСТЬ)
+                    {% elif result.casino_confidence == 'medium' %}
+                        🎰 ПОДОЗРЕНИЕ НА КАЗИНО
+                    {% else %}
+                        🎰 ВОЗМОЖНО КАЗИНО
+                    {% endif %}
+                </span>
+                <i class="fas fa-dice" style="color: #ff9800;"></i>
+            </div>
+            
+            <div class="form-fields">
+                <span class="form-field-tag" style="background: rgba(255, 152, 0, 0.1);">
+                    <i class="fas fa-exclamation-triangle" style="color: #ff9800;"></i> Азартные игры
+                </span>
+                <span class="form-field-tag" style="background: rgba(255, 152, 0, 0.1);">
+                    <i class="fas fa-money-bill" style="color: #ff9800;"></i> Финансовые риски
+                </span>
+                <span class="form-field-tag" style="background: rgba(255, 152, 0, 0.1);">
+                    <i class="fas fa-ban" style="color: #ff9800;"></i> Возможно нелегально
+                </span>
+            </div>
+            
+            {% if result.casino_indicators and result.casino_indicators|length > 0 %}
+            <div class="form-action" style="background: rgba(255, 152, 0, 0.1); border: 1px solid rgba(255, 152, 0, 0.3);">
+                <i class="fas fa-search" style="color: #ff9800;"></i> 
+                <strong>Обнаруженные признаки:</strong>
+                <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px;">
+                    {% for indicator in result.casino_indicators[:5] %}
+                    <span style="background: rgba(255, 152, 0, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.8rem;">
+                        {{ indicator }}
+                    </span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+            
+            <div style="margin-top: 15px; padding: 10px; background: rgba(255, 152, 0, 0.1); border-radius: 8px; font-size: 0.9rem; color: #ff9800; text-align: center;">
+                <i class="fas fa-exclamation-triangle"></i> 
+                Онлайн-казино могут быть нелегальными и опасными для ваших финансов. 
+                Рекомендуем покинуть сайт.
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
                     {% if result.detailed_report %}
                     <div class="tabs">
                         <div class="tab-header">
