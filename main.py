@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, Response 
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, JSONResponse
 from urllib.parse import unquote
 from typing import Optional, List
 import asyncio
@@ -64,8 +63,8 @@ async def lifespan(app: FastAPI):
     try:
         ai_model.load_model()
         logger.info("✅ AI model loaded successfully")
-    except:
-        logger.warning("⚠️ No pre-trained model found, will train on first scan")
+    except Exception as e:
+        logger.warning(f"⚠️ No pre-trained model found, will train on first scan: {e}")
     
     yield
     
@@ -153,13 +152,18 @@ def update_domain_reputation(url: str, result: dict):
     conn.close()
 
 def prepare_result_for_template(result: dict) -> dict:
-
     level1 = result.get('level1', {})
     deep_scan = result.get('deep_scan', {})
 
     ssl_analysis = level1.get('ssl_analysis', {})
     whois_analysis = level1.get('whois_analysis', {})
     domain_age = whois_analysis.get('domain_age_days')
+
+    # 🔥 НОВОЕ: Анализ казино
+    casino_analysis = deep_scan.get('casino_analysis', {})
+    is_casino = casino_analysis.get('is_casino', False)
+    casino_indicators = casino_analysis.get('indicators', [])
+    casino_confidence = casino_analysis.get('confidence', 'low')
 
     technical_indicators = {
         "ssl": {
@@ -234,6 +238,7 @@ def prepare_result_for_template(result: dict) -> dict:
              phishing_indicators["content_suspicious"].append(f"🔴 {pattern}")
         else:
              phishing_indicators["content_suspicious"].append(f"🟠 {pattern}")
+    
     if deep_scan.get('brand_impersonation'):
         brand = deep_scan['brand_impersonation']
         confidence = deep_scan.get('brand_confidence', 'medium')
@@ -250,7 +255,7 @@ def prepare_result_for_template(result: dict) -> dict:
     }
     
     if ssl_analysis.get('valid'):
-        positive_indicators["security"].append(f"✅ SSL сертификат от {ssl_analysis.get('issuer', 'Unknown')}")
+        positive_indicators["security"].append(f"✅ SSL сертификат от {ssl_analysis.get('issuer_name', 'Unknown')}")
     if domain_age and domain_age > 365:
         positive_indicators["trust"].append(f"✅ Домену больше года ({domain_age} дней)")
     if level1.get('dns_analysis', {}).get('has_mx_records'):
@@ -278,9 +283,34 @@ def prepare_result_for_template(result: dict) -> dict:
         else:
             negative_indicators["technical"].append(f"⚠️ {flag}")
 
-    
+    # 🔥 НОВОЕ: Добавляем казино в негативные индикаторы
+    if is_casino:
+        if casino_confidence == 'high':
+            negative_indicators["phishing"].append("🎰 ОНЛАЙН-КАЗИНО (высокая уверенность)")
+            casino_risk_boost = 40
+        elif casino_confidence == 'medium':
+            negative_indicators["phishing"].append("🎰 Подозрение на онлайн-казино")
+            casino_risk_boost = 30
+        else:
+            negative_indicators["phishing"].append("🎰 Возможные признаки казино")
+            casino_risk_boost = 20
+            
+        # Добавляем в фишинговые формы для отображения
+        phishing_indicators["form_analysis"].append({
+            "risk": "critical" if casino_confidence == "high" else "high",
+            "has_password": False,
+            "has_credit_card": False,
+            "inputs": 0,
+            "note": f"🎰 Признаки казино: {', '.join(casino_indicators[:3])}",
+            "action": "",
+            "external_action": False
+        })
+    else:
+        casino_risk_boost = 0
     
     risk_score = level1.get('risk_score', 0)
+    risk_score = min(100, risk_score + casino_risk_boost)  # Добавляем бонус за казино
+    
     if risk_score < 30:
         status = "Safe"
         status_color = "green"
@@ -314,9 +344,12 @@ def prepare_result_for_template(result: dict) -> dict:
         "redFlags": negative_indicators["phishing"][:5] + negative_indicators["security"][:5],
         "phishingForms": phishing_indicators["form_analysis"],
         "brandRisks": phishing_indicators["brand_risks"],
+        "casino_detected": is_casino,
+        "casino_indicators": casino_indicators,
+        "casino_confidence": casino_confidence,
         "details": result,
         "detailed_report": detailed_report
-    }                
+    }
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -414,7 +447,6 @@ async def scan_multiple(request: Request):
     ]
     
     results = []
-    
     
     for site in sites_to_scan[:3]:  
         try:
@@ -561,14 +593,12 @@ async def api_train_model():
                 "message": "Not enough training data (need at least 10 samples)"
             })
         
-
         features = []
         labels = []
 
         from collector import scan_url_async, CyberScanCollector
         collector = CyberScanCollector()
         
-
         for url, label in training_data:
             scan = await scan_url_async(url)
             features.append(collector.extract_features_for_ml(scan))
@@ -591,4 +621,3 @@ if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
