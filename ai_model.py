@@ -72,7 +72,6 @@ class CyberScanAI:
             'num_hidden_elements',
             'num_external_links',
             
-            # 🔥 НОВЫЕ ПРИЗНАКИ ДЛЯ КАЗИНО
             'casino_keywords_count',
             'has_casino_in_url',
             'casino_confidence_score'
@@ -84,7 +83,7 @@ class CyberScanAI:
             'behavioral': 0.4
         }
         
-        # 🔥 СПИСОК КАЗИНО-КЛЮЧЕВЫХ СЛОВ
+
         self.casino_keywords = [
             'казино', 'casino', 'вулкан', 'vulkan', 'pin up', 'пин ап',
             'joycasino', 'joy casino', 'mostbet', '1xbet', '1xslots',
@@ -95,19 +94,16 @@ class CyberScanAI:
             'vulkan casino', 'вулкан казино', 'игровые автоматы', 'игровые аппараты'
         ]
         
-        # 🔥 КАЗИНО-БРЕНДЫ ДЛЯ РАСПОЗНАВАНИЯ
         self.casino_brands = [
             'vulkan', 'вулкан', 'joycasino', 'joy casino', '1xbet', 'mostbet',
             'pinup', 'pin up', 'azino', 'азино', 'казино', 'casino'
         ]
 
-    # ⚠️ scan_website удален - он есть в collector.py
 
     def extract_features_from_scan(self, scan_result: dict) -> np.array:
         """Извлечение признаков из результата сканирования"""
         features = {}
         
-        # ИНИЦИАЛИЗАЦИЯ: все признаки в 0
         for feature in self.structural_features:
             features[feature] = 0
         
@@ -116,7 +112,6 @@ class CyberScanAI:
             deep_scan = scan_result.get('deep_scan', {})
             url = scan_result.get('url', '')
             
-            # URL анализ
             url_analysis = level1.get('url_analysis', {})
             features['url_length'] = url_analysis.get('url_length', 0)
             features['num_dots'] = url_analysis.get('num_dots', 0)
@@ -129,14 +124,12 @@ class CyberScanAI:
             features['num_query_params'] = url_analysis.get('num_query_params', 0)
             features['special_chars_count'] = url_analysis.get('special_chars_count', 0)
             
-            # DNS анализ
             dns_analysis = level1.get('dns_analysis', {})
             features['has_dns'] = int(dns_analysis.get('has_dns', False))
             features['has_mx'] = int(dns_analysis.get('has_mx', False))
             features['num_ip_addresses'] = len(dns_analysis.get('ip_addresses', []))
             features['num_ns_servers'] = len(dns_analysis.get('ns_servers', []))
             
-            # WHOIS анализ
             whois_analysis = level1.get('whois_analysis', {})
             features['domain_age_days'] = whois_analysis.get('domain_age_days', -1)
             features['is_private_whois'] = int(whois_analysis.get('is_private', False))
@@ -150,18 +143,15 @@ class CyberScanAI:
             else:
                 features['days_to_expiry'] = 0
             
-            # SSL анализ
             ssl_analysis = level1.get('ssl_analysis', {})
             features['ssl_valid'] = int(ssl_analysis.get('valid', False))
             features['ssl_days_until_expiry'] = ssl_analysis.get('days_until_expiry', -1)
             
-            # 🔥 АНАЛИЗ КАЗИНО ИЗ URL
             url_lower = url.lower()
             features['has_casino_in_url'] = int(any(brand in url_lower for brand in self.casino_brands))
             
             casino_keywords_count = 0
             
-            # Глубокий анализ
             if deep_scan:
                 forms = deep_scan.get('form_analysis', [])
                 features['num_forms'] = len(forms)
@@ -184,13 +174,10 @@ class CyberScanAI:
                 features['num_hidden_elements'] = content_analysis.get('num_hidden_elements', 0)
                 features['num_external_links'] = content_analysis.get('num_external_links', 0)
                 
-                # 🔥 АНАЛИЗ КАЗИНО ИЗ deep_scan
                 casino_analysis = deep_scan.get('casino_analysis', {})
                 if casino_analysis.get('is_casino'):
-                    # Считаем количество найденных ключевых слов
                     casino_keywords_count = len(casino_analysis.get('indicators', []))
                     
-                    # Оценка уверенности
                     confidence = casino_analysis.get('confidence', 'low')
                     if confidence == 'high':
                         features['casino_confidence_score'] = 3
@@ -204,7 +191,6 @@ class CyberScanAI:
         except Exception as e:
             logger.error(f"Error extracting features: {e}")
         
-        # Собираем значения в правильном порядке
         feature_values = [features[name] for name in self.structural_features]
         
         return np.array(feature_values).reshape(1, -1)
@@ -234,16 +220,13 @@ class CyberScanAI:
         for i in range(num_samples):
             features = {}
             
-            # Случайно определяем тип сайта
             site_type = np.random.choice(['safe', 'suspicious', 'malicious', 'casino'], p=[0.3, 0.3, 0.2, 0.2])
             
-            # Базовые признаки для всех типов
             features['casino_keywords_count'] = 0
             features['has_casino_in_url'] = 0
             features['casino_confidence_score'] = 0
             
             if site_type == 'safe':
-                # Безопасные сайты
                 features['domain_age_days'] = np.random.randint(365, 3650)
                 features['ssl_valid'] = 1
                 features['suspicious_tld'] = 0
@@ -265,7 +248,6 @@ class CyberScanAI:
                 label = 0
                 
             elif site_type == 'suspicious':
-                # Подозрительные сайты
                 features['domain_age_days'] = np.random.randint(30, 180)
                 features['ssl_valid'] = np.random.choice([0, 1], p=[0.4, 0.6])
                 features['suspicious_tld'] = np.random.choice([0, 1], p=[0.6, 0.4])
@@ -287,7 +269,6 @@ class CyberScanAI:
                 label = 1
                 
             elif site_type == 'casino':
-                # 🔥 КАЗИНО-САЙТЫ (новый класс)
                 features['domain_age_days'] = np.random.randint(1, 60)
                 features['ssl_valid'] = np.random.choice([0, 1], p=[0.3, 0.7])
                 features['suspicious_tld'] = np.random.choice([0, 1], p=[0.4, 0.6])
@@ -307,14 +288,12 @@ class CyberScanAI:
                 features['num_hidden_elements'] = np.random.poisson(4)
                 features['num_external_links'] = np.random.poisson(25)
                 
-                # 🔥 КАЗИНО-СПЕЦИФИЧНЫЕ ПРИЗНАКИ
                 features['casino_keywords_count'] = np.random.randint(3, 15)
                 features['has_casino_in_url'] = np.random.choice([0, 1], p=[0.2, 0.8])
                 features['casino_confidence_score'] = np.random.choice([1, 2, 3], p=[0.2, 0.3, 0.5])
                 label = 1
                 
-            else:  # malicious
-                # Вредоносные сайты (фишинг, скам)
+            else: 
                 features['domain_age_days'] = np.random.randint(1, 30)
                 features['ssl_valid'] = np.random.choice([0, 1], p=[0.8, 0.2])
                 features['suspicious_tld'] = np.random.choice([0, 1], p=[0.3, 0.7])
@@ -333,14 +312,11 @@ class CyberScanAI:
                 features['has_redirect'] = np.random.choice([0, 1], p=[0.5, 0.5])
                 features['num_hidden_elements'] = np.random.poisson(5)
                 features['num_external_links'] = np.random.poisson(30)
-                
-                # 🔥 Иногда казино-сайты могут быть вредоносными
                 features['casino_keywords_count'] = np.random.poisson(1)
                 features['has_casino_in_url'] = np.random.choice([0, 1], p=[0.7, 0.3])
                 features['casino_confidence_score'] = np.random.choice([0, 1], p=[0.7, 0.3])
                 label = 1
             
-            # Заполняем оставшиеся признаки
             for feature in self.structural_features:
                 if feature not in features:
                     if 'num_' in feature or 'count' in feature:
@@ -367,22 +343,20 @@ class CyberScanAI:
             
         elif use_synthetic:
             logger.info("Creating enhanced synthetic dataset with casino detection...")
-            X, y = self.create_sample_dataset(3000)  # Увеличили размер
+            X, y = self.create_sample_dataset(3000) 
             
         else:
             raise ValueError("No training data provided")
         
-        # Масштабирование признаков
         X_scaled = self.scaler.fit_transform(X)
         
-        # Разделение на train/test
         X_train, X_test, y_train, y_test = train_test_split(
             X_scaled, y, test_size=0.2, random_state=42, stratify=y
         )
 
         logger.info("Training Random Forest model with casino detection...")
         self.model = RandomForestClassifier(
-            n_estimators=250,  # Увеличили
+            n_estimators=250,  
             max_depth=25,
             min_samples_split=4,
             min_samples_leaf=2,
@@ -393,7 +367,6 @@ class CyberScanAI:
         
         self.model.fit(X_train, y_train)
         
-        # Оценка
         y_pred = self.model.predict(X_test)
         
         accuracy = accuracy_score(y_test, y_pred)
@@ -407,7 +380,6 @@ class CyberScanAI:
         logger.info(f"Recall: {recall:.3f}")
         logger.info(f"F1 Score: {f1:.3f}")
         
-        # Важность признаков
         feature_importance = pd.DataFrame({
             'feature': self.structural_features,
             'importance': self.model.feature_importances_
@@ -487,11 +459,9 @@ class CyberScanAI:
         """Вычисление уровня риска"""
         factors = self._get_important_factors(scan_result)
         
-        # Веса для разных факторов
         weight_map = {'low': 0.1, 'medium': 0.2, 'high': 0.3, 'critical': 0.4}
         total_weight = sum(weight_map.get(f.get('weight', 'low'), 0.1) for f in factors)
         
-        # 🔥 УСИЛЕНИЕ ДЛЯ КАЗИНО
         deep_scan = scan_result.get('deep_scan', {})
         casino_analysis = deep_scan.get('casino_analysis', {})
         if casino_analysis.get('is_casino'):
@@ -503,7 +473,6 @@ class CyberScanAI:
             else:
                 total_weight += 0.1
         
-        # Комбинируем вероятность с весами факторов
         score = min(prob_malicious + total_weight, 1.0)
         
         if score < 0.2:
@@ -644,7 +613,6 @@ class CyberScanAI:
                         'weight': 'medium'
                     })
                 
-                # 🔥 УСИЛЕННОЕ ОПРЕДЕЛЕНИЕ КАЗИНО
                 casino_analysis = deep_scan.get('casino_analysis', {})
                 if casino_analysis.get('is_casino'):
                     casino_conf = casino_analysis.get('confidence', 'low')
@@ -669,7 +637,6 @@ class CyberScanAI:
                         'weight': weight
                     })
                 
-                # Проверка URL на казино-бренды (дополнительно)
                 url = scan_result.get('url', '').lower()
                 for brand in self.casino_brands:
                     if brand in url and brand not in [f.get('description', '') for f in factors]:
@@ -683,7 +650,6 @@ class CyberScanAI:
         except Exception as e:
             logger.error(f"Error getting important factors: {e}")
         
-        # Если факторов нет, добавляем базовый
         if not factors:
             factors.append({
                 'factor': 'normal_site',
@@ -760,7 +726,6 @@ class CyberScanAI:
         
         return info
 
-# Создаем глобальный экземпляр модели
 ai_model = CyberScanAI()
 
 def analyze(url: str) -> None:
