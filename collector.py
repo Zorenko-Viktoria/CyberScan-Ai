@@ -55,9 +55,60 @@ class CyberScanCollector:
                 domain_part = tldextract.extract(url).domain
                 if brand not in domain_part:
                     result["suspicious_login"] = True
-                    break  
+                    break
         return result
-    
+
+    # 🔥 ИСПРАВЛЕННЫЙ детектор казино
+    async def _detect_casino(self, soup, url):
+        """Определение признаков онлайн-казино"""
+        result = {
+            "is_casino": False,
+            "confidence": "low",
+            "indicators": []
+        }
+        
+        text = soup.get_text().lower()
+        html = str(soup).lower()
+
+        casino_keywords = [
+            'казино', 'casino', 'вулкан', 'vulkan', 'pin up', 'пин ап',
+            'joycasino', 'joy casino', 'mostbet', '1xbet', '1xslots',
+            'слоты', 'slots', 'рулетка', 'roulette', 'блэкджек', 'blackjack',
+            'покер', 'poker', 'бонус за регистрацию', 'бездепозитный бонус',
+            'фриспины', 'free spins', 'джекпот', 'jackpot'
+        ]
+        
+        found_keywords = []
+        for keyword in casino_keywords:
+            if keyword in text or keyword in html:
+                found_keywords.append(keyword)
+
+        if found_keywords:
+            result["indicators"] = found_keywords[:5]
+            
+            # Определяем уверенность
+            if len(found_keywords) >= 5:
+                result["confidence"] = "high"
+                result["is_casino"] = True
+            elif len(found_keywords) >= 3:
+                result["confidence"] = "medium"
+                result["is_casino"] = True
+            elif len(found_keywords) >= 1:
+                result["confidence"] = "low"
+                result["is_casino"] = True
+
+        # Проверяем URL на признаки казино
+        url_lower = url.lower()
+        url_indicators = ['casino', 'казино', 'vulkan', '1x', 'pinu']
+        for ind in url_indicators:
+            if ind in url_lower:
+                result["indicators"].append(f"URL содержит '{ind}'")
+                result["is_casino"] = True
+                if result["confidence"] == "low":
+                    result["confidence"] = "medium"
+        
+        return result
+
     def __init__(self, max_concurrent=50, timeout=10):
         self.max_concurrent = max_concurrent
         self.timeout = timeout
@@ -376,7 +427,7 @@ class CyberScanCollector:
             
             try:
                 start_time = datetime.now()
-                async with self.session.get(url, allow_redirects=True, ssl=False) as response:
+                async with self.session.get(url, allow_redirects=True, ssl=True) as response:
                     end_time = datetime.now()
                     response_time = (end_time - start_time).total_seconds()
                     redirect_count = len(response.history)
@@ -477,20 +528,28 @@ class CyberScanCollector:
             'brand_impersonation': None,
             'brand_confidence': 'low',
             'risk_score': 0,
-            'has_redirect': False  
+            'has_redirect': False
         }
         
         try:
-            async with self.session.get(url, allow_redirects=True, ssl=False) as response:
+            async with self.session.get(url, allow_redirects=True, ssl=True) as response:
                 redirects = [str(r.url) for r in response.history]
                 html = await response.text()
                 soup = BeautifulSoup(html, 'html.parser')
                 
-                result['has_redirect'] = len(redirects) > 0  
+                result['has_redirect'] = len(redirects) > 0
                 
                 if len(redirects) > 2:
                     result['suspicious_patterns'].append(
                         f"Множественные редиректы ({len(redirects)})"
+                    )
+
+                # 🔥 ДОБАВЛЯЕМ ДЕТЕКТОР КАЗИНО
+                casino_analysis = await self._detect_casino(soup, url)
+                result["casino_analysis"] = casino_analysis
+                if casino_analysis["is_casino"]:
+                    result["suspicious_patterns"].append(
+                        f"🎰 ОБНАРУЖЕНО КАЗИНО (уверенность: {casino_analysis['confidence']})"
                     )
 
                 login_analysis = await self._detect_login_phishing(soup, url)
@@ -512,7 +571,7 @@ class CyberScanCollector:
                                 result['brand_impersonation'] = brand
                                 result['brand_confidence'] = 'high'
                                 result['suspicious_patterns'].append(f"Имитация бренда: {brand}")
-                                break 
+                                break
                                 
                 forms = soup.find_all('form')
                 for form in forms:
