@@ -10,9 +10,11 @@ import sqlite3
 import hashlib
 import logging
 from contextlib import asynccontextmanager
+import os 
 
 from collector import CyberScanCollector, scan_url_async
 from ai_model import CyberScanAI
+from monitor import monitor, start_monitor_background 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -65,6 +67,9 @@ async def lifespan(app: FastAPI):
         logger.info("✅ AI model loaded successfully")
     except Exception as e:
         logger.warning(f"⚠️ No pre-trained model found, will train on first scan: {e}")
+    
+    asyncio.create_task(start_monitor_background())
+    logger.info("🚀 Background monitor started")
     
     yield
     
@@ -641,8 +646,56 @@ async def api_train_model():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/illegal-sites")
+async def get_illegal_sites(category: Optional[str] = None, limit: int = 100, offset: int = 0):
+    """Получение списка отслеживаемых нелегальных сайтов"""
+    try:
+        sites = monitor.get_illegal_sites(category, limit, offset)
+        stats = monitor.get_statistics()
+        
+        return JSONResponse({
+            "success": True,
+            "sites": sites,
+            "statistics": stats,
+            "total": len(sites)
+        })
+    except Exception as e:
+        logger.error(f"Error getting illegal sites: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+            "sites": [],
+            "statistics": {"total": 0, "by_category": {}}
+        })
+
+@app.post("/api/monitor/run")
+async def run_monitor_manual():
+    """Ручной запуск цикла мониторинга"""
+    try:
+        await monitor.run_monitor_cycle()
+        return JSONResponse({"success": True, "message": "Monitor cycle completed"})
+    except Exception as e:
+        logger.error(f"Monitor cycle error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/monitor", response_class=HTMLResponse)
+async def monitor_page(request: Request):
+    """Страница мониторинга нелегальных сайтов"""
+    try:
+        stats = monitor.get_statistics()
+        return templates.TemplateResponse("monitor.html", {
+            "request": request,
+            "statistics": stats
+        })
+    except Exception as e:
+        logger.error(f"Error loading monitor page: {e}")
+        return templates.TemplateResponse("monitor.html", {
+            "request": request,
+            "statistics": {"total": 0, "by_category": {}},
+            "error": str(e)
+        })
+
 if __name__ == "__main__":
     import uvicorn
-    import os
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
