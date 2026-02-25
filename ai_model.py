@@ -604,7 +604,7 @@ class CyberScanAI:
                             'weight': 'high'
                         })
                 
-                # Подозрительные паттерны
+
                 suspicious = deep_scan.get('suspicious_patterns', [])
                 if suspicious:
                     factors.append({
