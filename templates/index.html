@@ -314,6 +314,7 @@
             cursor: not-allowed;
         }
 
+        /* Стили для результатов сканирования */
         .results-section {
             padding: 40px 0;
         }
@@ -1117,7 +1118,6 @@
             animation: spin 1s linear infinite;
         }
 
-        /* 🔥 ИСПРАВЛЕННЫЕ СТИЛИ ДЛЯ ГРАФИКОВ */
         .chart-container {
             background: var(--card-bg);
             border-radius: 15px;
@@ -1274,8 +1274,384 @@
                 </div>
             </section>
 
-            <div id="resultsContainer"></div>
-            <div id="recentScansContainer"></div>
+            <!-- ========== ВАЖНАЯ ЧАСТЬ: ОТОБРАЖЕНИЕ РЕЗУЛЬТАТОВ СКАНИРОВАНИЯ ========== -->
+            <div id="resultsContainer">
+                {% if result %}
+                <section class="results-section">
+                    <div class="container">
+                        <div class="result-card">
+                            <div class="result-header">
+                                <div class="site-info">
+                                    <i class="fas fa-link"></i>
+                                    <span class="site-url">{{ result.site }}</span>
+                                </div>
+                                <div class="status-badge {{ result.status_color }}">
+                                    {{ result.status }}
+                                </div>
+                            </div>
+
+                            <div class="risk-meter">
+                                <div class="risk-label">
+                                    <span>Уровень риска</span>
+                                    <span class="risk-value" style="color: {% if result.risk < 30 %}var(--success){% elif result.risk < 60 %}var(--warning){% else %}var(--danger){% endif %};">{{ result.risk }}%</span>
+                                </div>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" style="width: {{ result.risk }}%; background-color: {% if result.risk < 30 %}var(--success){% elif result.risk < 60 %}var(--warning){% else %}var(--danger){% endif %};"></div>
+                                </div>
+                            </div>
+
+                            <div class="trust-score">
+                                {% set trustScore = result.trustScore|default(0) %}
+                                <div class="score-circle" style="--percent: {{ trustScore }}">
+                                    <span class="score-value">{{ trustScore }}%</span>
+                                </div>
+                                <div class="score-label">Trust Score</div>
+                            </div>
+
+                            <div class="summary">
+                                <i class="fas fa-info-circle"></i>
+                                <p>{{ result.summary }}</p>
+                            </div>
+
+                            <div class="flags-grid">
+                                {% if result.greenFlags and result.greenFlags|length > 0 %}
+                                <div class="flags-section green">
+                                    <h3><i class="fas fa-check-circle"></i> Позитивные признаки</h3>
+                                    <ul>
+                                        {% for flag in result.greenFlags %}
+                                        <li><i class="fas fa-check-circle"></i> {{ flag }}</li>
+                                        {% endfor %}
+                                    </ul>
+                                </div>
+                                {% endif %}
+
+                                {% if result.redFlags and result.redFlags|length > 0 %}
+                                <div class="flags-section red">
+                                    <h3><i class="fas fa-exclamation-circle"></i> Предупреждения</h3>
+                                    <ul>
+                                        {% for flag in result.redFlags %}
+                                        <li><i class="fas fa-exclamation-circle"></i> {{ flag }}</li>
+                                        {% endfor %}
+                                    </ul>
+                                </div>
+                                {% endif %}
+                            </div>
+
+                            {% if result.phishingForms and result.phishingForms|length > 0 %}
+                            <div class="phishing-analysis">
+                                <h3><i class="fas fa-fish"></i> Детальный анализ фишинга</h3>
+                                
+                                <div class="phishing-forms">
+                                    {% for form in result.phishingForms %}
+                                    <div class="phishing-form-card {{ form.risk if form.risk else 'medium' }}">
+                                        <div class="form-header">
+                                            <span class="form-risk-badge {{ form.risk if form.risk else 'medium' }}">
+                                                {% if form.risk == 'critical' %}КРИТИЧЕСКИЙ РИСК
+                                                {% elif form.risk == 'high' %}ВЫСОКИЙ РИСК
+                                                {% else %}СРЕДНИЙ РИСК
+                                                {% endif %}
+                                            </span>
+                                            <i class="fas {% if form.has_credit_card %}fa-credit-card{% elif form.has_password %}fa-lock{% else %}fa-wpforms{% endif %}"></i>
+                                        </div>
+                                        
+                                        <div class="form-fields">
+                                            {% if form.has_password %}
+                                            <span class="form-field-tag"><i class="fas fa-lock"></i> Поле пароля</span>
+                                            {% endif %}
+                                            {% if form.has_credit_card %}
+                                            <span class="form-field-tag"><i class="fas fa-credit-card"></i> Данные карты</span>
+                                            {% endif %}
+                                            <span class="form-field-tag"><i class="fas fa-input"></i> {{ form.inputs or 0 }} полей</span>
+                                        </div>
+                                        
+                                        {% if form.external_action and form.action %}
+                                        <div class="form-action">
+                                            <i class="fas fa-external-link-alt"></i> 
+                                            <strong>Данные уходят на:</strong> {{ form.action }}
+                                        </div>
+                                        {% endif %}
+                                        
+                                        {% if form.note %}
+                                        <div style="margin-top: 10px; font-size: 0.9rem;">
+                                            {{ form.note }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                    {% endfor %}
+                                </div>
+
+                                {% if result.brandRisks and result.brandRisks|length > 0 %}
+                                <div class="brand-risks">
+                                    <h4><i class="fas fa-copyright"></i> Анализ подделки брендов</h4>
+                                    {% for risk in result.brandRisks %}
+                                    <div class="brand-risk-item {% if '🚨' in risk %}high{% else %}medium{% endif %}">
+                                        <i class="fas fa-exclamation-triangle"></i>
+                                        {{ risk }}
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                            </div>
+                            {% endif %}
+
+                            <!-- КАЗИНО АНАЛИЗ -->
+                            {% if result.casino_detected %}
+                            <div class="phishing-analysis" style="border-left: 4px solid #ff9800; margin-top: 20px;">
+                                <h3><i class="fas fa-dice" style="color: #ff9800;"></i> Обнаружено онлайн-казино</h3>
+                                
+                                <div class="phishing-forms">
+                                    <div class="phishing-form-card critical" style="border-left-color: #ff9800; background: rgba(255, 152, 0, 0.05);">
+                                        <div class="form-header">
+                                            <span class="form-risk-badge critical" style="background: rgba(255, 152, 0, 0.2); color: #ff9800; border: 1px solid #ff9800;">
+                                                {% if result.casino_confidence == 'high' %}
+                                                    🎰 КАЗИНО (ВЫСОКАЯ УВЕРЕННОСТЬ)
+                                                {% elif result.casino_confidence == 'medium' %}
+                                                    🎰 ПОДОЗРЕНИЕ НА КАЗИНО
+                                                {% else %}
+                                                    🎰 ВОЗМОЖНО КАЗИНО
+                                                {% endif %}
+                                            </span>
+                                            <i class="fas fa-dice" style="color: #ff9800;"></i>
+                                        </div>
+                                        
+                                        <div class="form-fields">
+                                            <span class="form-field-tag" style="background: rgba(255, 152, 0, 0.1);">
+                                                <i class="fas fa-exclamation-triangle" style="color: #ff9800;"></i> Азартные игры
+                                            </span>
+                                            <span class="form-field-tag" style="background: rgba(255, 152, 0, 0.1);">
+                                                <i class="fas fa-money-bill" style="color: #ff9800;"></i> Финансовые риски
+                                            </span>
+                                            <span class="form-field-tag" style="background: rgba(255, 152, 0, 0.1);">
+                                                <i class="fas fa-ban" style="color: #ff9800;"></i> Возможно нелегально
+                                            </span>
+                                        </div>
+                                        
+                                        {% if result.casino_indicators and result.casino_indicators|length > 0 %}
+                                        <div class="form-action" style="background: rgba(255, 152, 0, 0.1); border: 1px solid rgba(255, 152, 0, 0.3);">
+                                            <i class="fas fa-search" style="color: #ff9800;"></i> 
+                                            <strong>Обнаруженные признаки:</strong>
+                                            <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px;">
+                                                {% for indicator in result.casino_indicators[:5] %}
+                                                <span style="background: rgba(255, 152, 0, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.8rem;">
+                                                    {{ indicator }}
+                                                </span>
+                                                {% endfor %}
+                                            </div>
+                                        </div>
+                                        {% endif %}
+                                        
+                                        <div style="margin-top: 15px; padding: 10px; background: rgba(255, 152, 0, 0.1); border-radius: 8px; font-size: 0.9rem; color: #ff9800; text-align: center;">
+                                            <i class="fas fa-exclamation-triangle"></i> 
+                                            Онлайн-казино могут быть нелегальными и опасными для ваших финансов. 
+                                            Рекомендуем покинуть сайт.
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            {% if result.detailed_report %}
+                            <div class="tabs">
+                                <div class="tab-header">
+                                    <button class="tab-btn active" onclick="showTab(event, 'technical')">Технические</button>
+                                    <button class="tab-btn" onclick="showTab(event, 'phishing')">Фишинг</button>
+                                    <button class="tab-btn" onclick="showTab(event, 'positive')">Позитив</button>
+                                    <button class="tab-btn" onclick="showTab(event, 'negative')">Негатив</button>
+                                </div>
+
+                                <div id="technical" class="tab-content active">
+                                    <div class="tech-grid">
+                                        <div class="tech-card">
+                                            <h4><i class="fas fa-lock"></i> SSL сертификат</h4>
+                                            <div class="tech-item">
+                                                <span class="tech-label">Статус:</span>
+                                                <span class="tech-value {% if result.detailed_report.technical.ssl.valid %}good{% else %}bad{% endif %}">
+                                                    {% if result.detailed_report.technical.ssl.valid %}Действителен{% else %}Недействителен{% endif %}
+                                                </span>
+                                            </div>
+                                            <div class="tech-item">
+                                                <span class="tech-label">Издатель:</span>
+                                                <span class="tech-value">{{ result.detailed_report.technical.ssl.issuer|default('N/A') }}</span>
+                                            </div>
+                                            <div class="tech-item">
+                                                <span class="tech-label">Дней до истечения:</span>
+                                                {% set days_left = result.detailed_report.technical.ssl.days_left %}
+                                                <span class="tech-value {% if days_left and days_left|int > 30 %}good{% else %}bad{% endif %}">
+                                                    {{ days_left|default('N/A') }}
+                                                </span>
+                                            </div>
+                                        </div>
+
+                                        <div class="tech-card">
+                                            <h4><i class="fas fa-globe"></i> DNS</h4>
+                                            <div class="tech-item">
+                                                <span class="tech-label">IP адресов:</span>
+                                                <span class="tech-value">{{ result.detailed_report.technical.dns.ip_count|default(0) }}</span>
+                                            </div>
+                                            <div class="tech-item">
+                                                <span class="tech-label">MX записи:</span>
+                                                <span class="tech-value {% if result.detailed_report.technical.dns.has_mx %}good{% else %}bad{% endif %}">
+                                                    {{ 'Есть' if result.detailed_report.technical.dns.has_mx else 'Нет' }}
+                                                </span>
+                                            </div>
+                                        </div>
+
+                                        <div class="tech-card">
+                                            <h4><i class="fas fa-clock"></i> Домен</h4>
+                                            <div class="tech-item">
+                                                <span class="tech-label">Возраст:</span>
+                                                {% set age_days = result.detailed_report.technical.domain.age_days %}
+                                                <span class="tech-value 
+                                                    {% if age_days and age_days|int > 365 %}good
+                                                    {% elif age_days and age_days|int > 90 %}medium
+                                                    {% else %}bad{% endif %}">
+                                                    {{ age_days|default('N/A') }} {% if age_days %}дней{% endif %}
+                                                </span>
+                                            </div>
+                                            <div class="tech-item">
+                                                <span class="tech-label">Регистратор:</span>
+                                                <span class="tech-value">{{ result.detailed_report.technical.domain.registrar|default('N/A') }}</span>
+                                            </div>
+                                        </div>
+
+                                        <div class="tech-card">
+                                            <h4><i class="fas fa-tachometer-alt"></i> Производительность</h4>
+                                            <div class="tech-item">
+                                                <span class="tech-label">Время ответа:</span>
+                                                <span class="tech-value">
+                                                    {% if result.detailed_report.technical.performance.response_time %}
+                                                        {{ "%.2f"|format(result.detailed_report.technical.performance.response_time|float) }} сек
+                                                    {% else %}
+                                                        N/A
+                                                    {% endif %}
+                                                </span>
+                                            </div>
+                                            <div class="tech-item">
+                                                <span class="tech-label">Размер страницы:</span>
+                                                <span class="tech-value">
+                                                    {% if result.detailed_report.technical.performance.page_size %}
+                                                        {{ (result.detailed_report.technical.performance.page_size / 1024)|round(1) }} KB
+                                                    {% else %}
+                                                        N/A
+                                                    {% endif %}
+                                                </span>
+                                            </div>
+                                            <div class="tech-item">
+                                                <span class="tech-label">Редиректов:</span>
+                                                <span class="tech-value">{{ result.detailed_report.technical.performance.redirect_count|default(0) }}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div id="phishing" class="tab-content">
+                                    <div class="indicators-grid">
+                                        {% if result.detailed_report.phishing.url_suspicious and result.detailed_report.phishing.url_suspicious|length > 0 %}
+                                        <div class="indicator-card negative">
+                                            <h4><i class="fas fa-link"></i> Подозрительный URL</h4>
+                                            <ul class="indicator-list">
+                                                {% for item in result.detailed_report.phishing.url_suspicious %}
+                                                <li><i class="fas fa-exclamation-triangle" style="color: var(--warning);"></i> {{ item }}</li>
+                                                {% endfor %}
+                                            </ul>
+                                        </div>
+                                        {% endif %}
+
+                                        {% if result.detailed_report.phishing.content_suspicious and result.detailed_report.phishing.content_suspicious|length > 0 %}
+                                        <div class="indicator-card negative">
+                                            <h4><i class="fas fa-file-alt"></i> Подозрительный контент</h4>
+                                            <ul class="indicator-list">
+                                                {% for item in result.detailed_report.phishing.content_suspicious %}
+                                                <li>{{ item }}</li>
+                                                {% endfor %}
+                                            </ul>
+                                        </div>
+                                        {% endif %}
+
+                                        <div class="indicator-card negative">
+                                            <h4><i class="fas fa-wpforms"></i> Формы</h4>
+                                            <ul class="indicator-list">
+                                                <li>Всего форм: {{ result.detailed_report.phishing.form_analysis|length }}</li>
+                                                <li>С паролями: {{ result.detailed_report.phishing.form_analysis|selectattr('has_password')|list|length }}</li>
+                                                <li>С картами: {{ result.detailed_report.phishing.form_analysis|selectattr('has_credit_card')|list|length }}</li>
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div id="positive" class="tab-content">
+                                    <div class="indicators-grid">
+                                        {% for category, items in result.detailed_report.positive.items() %}
+                                        {% if items and items|length > 0 %}
+                                        <div class="indicator-card positive">
+                                            <h4>
+                                                {% if category == 'security' %}<i class="fas fa-shield-alt"></i>
+                                                {% elif category == 'trust' %}<i class="fas fa-handshake"></i>
+                                                {% else %}<i class="fas fa-check"></i>
+                                                {% endif %}
+                                                {{ category|capitalize }}
+                                            </h4>
+                                            <ul class="indicator-list">
+                                                {% for item in items %}
+                                                <li><i class="fas fa-check-circle" style="color: var(--success);"></i> {{ item }}</li>
+                                                {% endfor %}
+                                            </ul>
+                                        </div>
+                                        {% endif %}
+                                        {% endfor %}
+                                    </div>
+                                </div>
+
+                                <div id="negative" class="tab-content">
+                                    <div class="indicators-grid">
+                                        {% for category, items in result.detailed_report.negative.items() %}
+                                        {% if items and items|length > 0 %}
+                                        <div class="indicator-card negative">
+                                            <h4>
+                                                {% if category == 'security' %}<i class="fas fa-lock"></i>
+                                                {% elif category == 'phishing' %}<i class="fas fa-fish"></i>
+                                                {% else %}<i class="fas fa-exclamation-triangle"></i>
+                                                {% endif %}
+                                                {{ category|capitalize }}
+                                            </h4>
+                                            <ul class="indicator-list">
+                                                {% for item in items %}
+                                                <li><i class="fas fa-exclamation-circle" style="color: var(--danger);"></i> {{ item }}</li>
+                                                {% endfor %}
+                                            </ul>
+                                        </div>
+                                        {% endif %}
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </section>
+                {% endif %}
+            </div>
+
+            <div id="recentScansContainer">
+                {% if recent_scans and recent_scans|length > 0 %}
+                <section class="recent-scans">
+                    <div class="container">
+                        <h2><i class="fas fa-history"></i> Последние проверки</h2>
+                        <div class="scans-list">
+                            {% for scan in recent_scans %}
+                            <div class="scan-item" onclick="window.location.href='/check/{{ scan.url|urlencode }}'">
+                                <span class="scan-url">{{ scan.url }}</span>
+                                <span class="scan-risk" style="color: {% if scan.risk < 30 %}var(--success){% elif scan.risk < 60 %}var(--warning){% else %}var(--danger){% endif %};">
+                                    {{ scan.risk }}% риск
+                                </span>
+                                <span class="scan-time">{{ scan.time }}</span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </section>
+                {% endif %}
+            </div>
         </div>
 
         <!-- Страница мониторинга -->
@@ -1329,7 +1705,6 @@
                     </button>
                 </div>
 
-                <!-- 🔥 ИСПРАВЛЕННЫЙ КОНТЕЙНЕР ДЛЯ ГРАФИКА -->
                 <div class="chart-container" id="trendChartContainer" style="display: none;">
                     <h3><i class="fas fa-chart-line" style="color: var(--accent);"></i> Динамика обнаружений</h3>
                     <canvas id="trendChart"></canvas>
@@ -1396,6 +1771,24 @@
         let currentTheme = localStorage.getItem('theme') || 'dark';
         let currentCategory = '';
         let currentPage = 'home';
+
+        // Функция для переключения вкладок
+        function showTab(event, tabId) {
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            
+            if (event && event.target) {
+                event.target.classList.add('active');
+            }
+            const tabContent = document.getElementById(tabId);
+            if (tabContent) {
+                tabContent.classList.add('active');
+            }
+        }
 
         // Инициализация темы
         document.addEventListener('DOMContentLoaded', function() {
