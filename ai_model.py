@@ -1,407 +1,878 @@
-import asyncio
-import sqlite3
-import json
-import logging
-from datetime import datetime, timedelta
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse
+import ssl
+import socket
+import whois
+from datetime import datetime
 import numpy as np
-from typing import List, Dict, Optional
-import time
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.feature_extraction.text import TfidfVectorizer
+import joblib
+import json
 import os
-from collections import defaultdict
-import threading
-from queue import Queue
-
-from ai_model import CyberScanAI
-from collector import scan_url_async
+from datetime import datetime
+import logging
+import warnings
+warnings.filterwarnings('ignore')
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class AIAutoTrainer:
-    """
-    Автоматическое обучение AI модели на реальных данных
-    Объединяет AI модель и автоматический сбор данных
-    """
+class CyberScanAI:
     
-    def __init__(self, db_path='cyberscan.db', model_path='cyberscan_model.pkl'):
-        self.db_path = db_path
+    def __init__(self, model_path='cyberscan_model.pkl'):
         self.model_path = model_path
-        self.ai_model = CyberScanAI(model_path)
+        self.model = None
+        self.scaler = StandardScaler()
+        self.text_vectorizer = TfidfVectorizer(
+            max_features=500,
+            stop_words='english',
+            ngram_range=(1, 3)
+        )
         
+        self.structural_features = [
+            'url_length',
+            'num_dots',
+            'num_hyphens',
+            'num_digits',
+            'has_ip',
+            'subdomain_count',
+            'suspicious_tld',
+            'path_length',
+            'num_query_params',
+            'special_chars_count',
+            
+            'has_dns',
+            'has_mx',
+            'num_ip_addresses',
+            'num_ns_servers',
+            
+            'domain_age_days',
+            'is_private_whois',
+            'days_to_expiry',
+            
+            'ssl_valid',
+            'ssl_days_until_expiry',
+            
+            'num_forms',
+            'num_password_forms',
+            'num_external_scripts',
+            'num_external_resources',
+            'scam_word_count',
+            'has_brand_impersonation',
+            'num_suspicious_patterns',
+            'num_iframes',
+            'has_meta_refresh',
+            'has_redirect',
+            'num_hidden_elements',
+            'num_external_links',
+            
+            'casino_keywords_count',
+            'has_casino_in_url',
+            'casino_confidence_score'
+        ]
         
-        self.last_train_time = None
-        self.training_interval = timedelta(hours=24) 
-        self.min_samples_for_train = 200 
-        self.is_training = False
-        
-        self.training_stats = {
-            'total_trainings': 0,
-            'last_accuracy': 0,
-            'total_samples': 0,
-            'errors': []
+        self.feature_weights = {
+            'structural': 0.3,
+            'text': 0.3,
+            'behavioral': 0.4
         }
-        
-        
-        self._load_existing_model()
-    
-    def _load_existing_model(self):
-        """Загрузка существующей модели"""
-        if os.path.exists(self.model_path):
-            try:
-                self.ai_model.load_model()
-                logger.info(f"✅ Модель загружена из {self.model_path}")
-            except Exception as e:
-                logger.warning(f"⚠️ Не удалось загрузить модель: {e}")
-    
-    async def collect_training_data(self, limit: int = 1000) -> tuple:
-        """
-        Сбор данных для обучения из БД
-        Возвращает (scan_results, labels)
-        """
-        logger.info(f"📊 Сбор данных для обучения (макс: {limit})")
-        
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-        
-      
-        c.execute("""
-            SELECT domain, category, risk_score, details, first_seen
-            FROM illegal_sites 
-            WHERE details IS NOT NULL AND details != '{}' AND details != ''
-            ORDER BY last_seen DESC
-            LIMIT ?
-        """, (limit,))
-        
-        malicious_rows = c.fetchall()
-        
-     
-        c.execute("""
-            SELECT url, result FROM scans 
-            WHERE is_malicious = 0 
-            ORDER BY timestamp DESC
-            LIMIT ?
-        """, (limit,))
-        
-        safe_rows = c.fetchall()
-        
-       
-        c.execute("""
-            SELECT url, result FROM scans 
-            WHERE is_malicious IS NOT NULL
-            ORDER BY timestamp DESC
-            LIMIT ?
-        """, (limit * 2,))
-        
-        user_scans = c.fetchall()
-        
-        conn.close()
-        
-        scan_results = []
-        labels = []
         
 
-        for domain, category, risk_score, details_json, first_seen in malicious_rows:
-            try:
-                details = json.loads(details_json) if details_json else {}
-                scan_result = {
-                    'url': f"http://{domain}",
-                    'level1': {
-                        'risk_score': risk_score,
-                        'whois_analysis': {'domain_age_days': self._calculate_age(first_seen)},
-                        'url_analysis': self._extract_url_features(domain)
-                    },
-                    'deep_scan': details
-                }
-                scan_results.append(scan_result)
-              
-                is_malicious = 1 if category in ['phishing', 'casino', 'malware', 'pyramid'] or risk_score > 60 else 0
-                labels.append(is_malicious)
-            except Exception as e:
-                logger.debug(f"Ошибка обработки опасного сайта: {e}")
+        self.casino_keywords = {
+    'casino', 'vulkan', 'pinup', 'pin-up', 'joycasino', 'mostbet', '1xbet', '1xslots',
+    'slots', 'roulette', 'blackjack', 'poker', 'freespins', 'jackpot',
+    'online casino', 'best casino', 'top casino', 'casino online',
+    'vulkan casino', 'joy casino', 'azino',
+    'mirror', 'official', 'bonus', 'win', 'play', 'freespin', 'reward', 'claim',
+    'free bonus', 'bonus without deposit', 'instant win', 'quick payout', 'real money',
+    'get your bonus', 'vip casino', 'exclusive offer', 'big win', 'fast withdrawal',
+    'daily bonus', 'hot slots', 'new slot', 'mega jackpot', 'big prize', 'register now',
+    'sign up bonus', 'casino games', 'live casino', 'online slots', 'mobile casino',
+    'free spin', 'spin and win', 'slot machine', 'gamble', 'high roller', 'instant cash',
+    'play and win', 'casino app', 'exclusive bonus', 'top slots', 'win jackpot',
+    'claim free spins', 'vip slots', 'bonus code', 'welcome bonus', 'progressive jackpot',
+    'big payout', 'hot casino', 'new casino', 'fast cash', 'bonus offer', 'daily reward',
+    'instant bonus', 'slot jackpot', 'casino bonus', 'win real money', 'free chips',
+    'casino online free', 'best slots', 'top games', 'live roulette', 'live blackjack',
+    'live poker', 'live dealer', 'jackpot slots', 'mega slots', 'real casino', 'big casino',
+    'high stakes', 'exclusive slots', 'online poker', 'online blackjack', 'online roulette',
+    'slot bonus', 'spin bonus', 'play slots', 'free jackpot', 'big spin', 'vip reward',
+    'casino promo', 'welcome package', 'instant reward', 'super slots', 'mega bonus',
+    'daily spin', 'exclusive jackpot', 'slot games', 'online gambling', 'casino winnings',
+    'fast spin', 'quick win', 'big reward', 'casino spins', 'casino prize', 'free chips bonus',
+    'hot bonus', 'best payout', 'real slots', 'play casino', 'jackpot win', 'online gambling site',
+    'win bonus', 'fast jackpot', 'exclusive casino', 'vip bonus', 'casino match', 'mega payout',
+    'online casino games', 'new slots', 'slot machine bonus', 'casino challenge', 'spin reward',
+    'casino online slots', 'instant jackpot', 'jackpot reward', 'fast reward', 'online jackpot',
+    'vip spins', 'casino deal', 'slot reward', 'mega spin', 'big jackpot', 'daily jackpot',
+    'exclusive spin', 'fast bonus', 'win real cash', 'online slots free', 'casino token',
+    'play and earn', 'spin and earn', 'free chips online', 'top jackpot', 'hot spin', 'slot prize',
+    'quick reward', 'daily bonus reward', 'exclusive chips', 'vip game', 'instant chips', 'real bonus',
+    'mega win', 'jackpot spin', 'online casino vip', 'fast chips', 'free online casino',
+    'casino event', 'special bonus', 'online slot bonus', 'big casino win', 'slot cash',
+    'casino token bonus', 'instant casino', 'casino online vip', 'bonus jackpot', 'hot jackpot',
+    'daily casino', 'exclusive win', 'fast casino', 'mega casino', 'spin jackpot', 'vip slot bonus',
+    'casino online bonus', 'top casino bonus', 'best casino bonus', 'play jackpot', 'quick jackpot',
+    'real casino bonus', 'slot vip', 'casino mega', 'mega reward', 'exclusive mega', 'bonus reward',
+    'hot reward', 'casino free spins', 'online casino jackpot', 'instant spin', 'spin free',
+    'vip casino game', 'casino top', 'bonus play', 'daily reward bonus', 'mega jackpot spin'
+}
+
+        self.casino_brands = {
+    'vulkan', 'joycasino', '1xbet', 'mostbet', 'pinup', 'pin-up', 'azino',
+    'casino', 'slots', 'roulette', 'blackjack', 'poker', 'online casino', 'casino online',
+    'vulkan casino', 'joy casino', 'vip casino', 'top casino', 'best casino',
+    'exclusive casino', 'mega casino', 'hot casino', 'new casino'
+     }
+
+
+    def extract_features_from_scan(self, scan_result: dict) -> np.array:
+        """Извлечение признаков из результата сканирования"""
+        features = {}
         
-       
-        for url, result_json in safe_rows:
-            try:
-                scan_result = json.loads(result_json) if result_json else {'url': url}
-                scan_results.append(scan_result)
-                labels.append(0)
-            except Exception as e:
-                logger.debug(f"Ошибка обработки безопасного сайта: {e}")
+        for feature in self.structural_features:
+            features[feature] = 0
         
-        
-        url_seen = set()
-        for url, result_json in user_scans:
-            if url in url_seen:
-                continue
-            url_seen.add(url)
-            
-            try:
-                scan_result = json.loads(result_json) if result_json else {'url': url}
-                
-                is_malicious = 1 if 'is_malicious' in scan_result and scan_result['is_malicious'] else 0
-                scan_results.append(scan_result)
-                labels.append(is_malicious)
-            except Exception as e:
-                logger.debug(f"Ошибка обработки пользовательского скана: {e}")
-        
-        logger.info(f"📊 Собрано данных: {len(scan_results)} образцов")
-        logger.info(f"   Опасных: {sum(labels)} | Безопасных: {len(labels) - sum(labels)}")
-        
-        return scan_results, labels
-    
-    def _calculate_age(self, date_str) -> int:
-        """Расчет возраста домена в днях"""
         try:
-            if isinstance(date_str, str):
-                date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-                return (datetime.now() - date).days
-        except:
-            pass
-        return np.random.randint(30, 365) 
+            level1 = scan_result.get('level1', {})
+            deep_scan = scan_result.get('deep_scan', {})
+            url = scan_result.get('url', '')
+            
+            url_analysis = level1.get('url_analysis', {})
+            features['url_length'] = url_analysis.get('url_length', 0)
+            features['num_dots'] = url_analysis.get('num_dots', 0)
+            features['num_hyphens'] = url_analysis.get('num_hyphens', 0)
+            features['num_digits'] = url_analysis.get('num_digits', 0)
+            features['has_ip'] = int(url_analysis.get('has_ip', False))
+            features['subdomain_count'] = url_analysis.get('subdomain_count', 0)
+            features['suspicious_tld'] = int(url_analysis.get('suspicious_tld', False))
+            features['path_length'] = url_analysis.get('path_length', 0)
+            features['num_query_params'] = url_analysis.get('num_query_params', 0)
+            features['special_chars_count'] = url_analysis.get('special_chars_count', 0)
+            
+            dns_analysis = level1.get('dns_analysis', {})
+            features['has_dns'] = int(dns_analysis.get('has_dns', False))
+            features['has_mx'] = int(dns_analysis.get('has_mx', False))
+            features['num_ip_addresses'] = len(dns_analysis.get('ip_addresses', []))
+            features['num_ns_servers'] = len(dns_analysis.get('ns_servers', []))
+            
+            whois_analysis = level1.get('whois_analysis', {})
+            features['domain_age_days'] = whois_analysis.get('domain_age_days', -1)
+            features['is_private_whois'] = int(whois_analysis.get('is_private', False))
+            
+            if whois_analysis.get('expiration_date'):
+                try:
+                    exp_date = datetime.fromisoformat(whois_analysis['expiration_date'].replace('Z', '+00:00'))
+                    features['days_to_expiry'] = (exp_date - datetime.now()).days
+                except:
+                    features['days_to_expiry'] = 0
+            else:
+                features['days_to_expiry'] = 0
+            
+            ssl_analysis = level1.get('ssl_analysis', {})
+            features['ssl_valid'] = int(ssl_analysis.get('valid', False))
+            features['ssl_days_until_expiry'] = ssl_analysis.get('days_until_expiry', -1)
+            
+            url_lower = url.lower()
+            features['has_casino_in_url'] = int(any(brand in url_lower for brand in self.casino_brands))
+            
+            casino_keywords_count = 0
+            
+            if deep_scan:
+                forms = deep_scan.get('form_analysis', [])
+                features['num_forms'] = len(forms)
+                features['num_password_forms'] = len([f for f in forms if f.get('has_password')])
+                
+                scripts = deep_scan.get('javascript_analysis', [])
+                features['num_external_scripts'] = len([s for s in scripts if s.get('external')])
+                
+                features['num_external_resources'] = len(deep_scan.get('external_resources', []))
+                
+                content_analysis = deep_scan.get('content_analysis', {})
+                features['scam_word_count'] = content_analysis.get('scam_word_count', 0)
+                
+                features['has_brand_impersonation'] = int(deep_scan.get('brand_impersonation') is not None)
+                features['num_suspicious_patterns'] = len(deep_scan.get('suspicious_patterns', []))
+                
+                features['num_iframes'] = content_analysis.get('num_iframes', 0)
+                features['has_meta_refresh'] = int(content_analysis.get('has_meta_refresh', False))
+                features['has_redirect'] = int(deep_scan.get('has_redirect', False))
+                features['num_hidden_elements'] = content_analysis.get('num_hidden_elements', 0)
+                features['num_external_links'] = content_analysis.get('num_external_links', 0)
+                
+                casino_analysis = deep_scan.get('casino_analysis', {})
+                if casino_analysis.get('is_casino'):
+                    casino_keywords_count = len(casino_analysis.get('indicators', []))
+                    
+                    confidence = casino_analysis.get('confidence', 'low')
+                    if confidence == 'high':
+                        features['casino_confidence_score'] = 3
+                    elif confidence == 'medium':
+                        features['casino_confidence_score'] = 2
+                    else:
+                        features['casino_confidence_score'] = 1
+            
+            features['casino_keywords_count'] = casino_keywords_count
+            
+        except Exception as e:
+            logger.error(f"Error extracting features: {e}")
+        
+        feature_values = [features[name] for name in self.structural_features]
+        
+        return np.array(feature_values).reshape(1, -1)
     
-    def _extract_url_features(self, domain: str) -> dict:
-        """Извлечение базовых признаков URL"""
+    def extract_text_features(self, html_content: str) -> np.array:
+        """Извлечение текстовых признаков"""
+        if not html_content:
+            return np.zeros((1, 500))  
+        
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html_content, 'html.parser')
+        text = soup.get_text()
+        
+        try:
+            text_features = self.text_vectorizer.transform([text])
+            return text_features.toarray()
+        except:
+            return np.zeros((1, 500))
+    
+    def create_sample_dataset(self, num_samples=1000):
+        """Создание синтетического датасета для обучения с учетом казино"""
+        np.random.seed(42)
+        
+        data = []
+        labels = []
+        
+        for i in range(num_samples):
+            features = {}
+            
+            site_type = np.random.choice(['safe', 'suspicious', 'malicious', 'casino'], p=[0.3, 0.3, 0.2, 0.2])
+            
+            features['casino_keywords_count'] = 0
+            features['has_casino_in_url'] = 0
+            features['casino_confidence_score'] = 0
+            
+            if site_type == 'safe':
+                features['domain_age_days'] = np.random.randint(365, 3650)
+                features['ssl_valid'] = 1
+                features['suspicious_tld'] = 0
+                features['num_suspicious_patterns'] = np.random.poisson(0.5)
+                features['scam_word_count'] = np.random.poisson(2)
+                features['has_brand_impersonation'] = 0
+                features['num_forms'] = np.random.poisson(1)
+                features['num_password_forms'] = 0
+                features['days_to_expiry'] = np.random.randint(100, 500)
+                features['has_ip'] = 0
+                features['num_digits'] = np.random.poisson(2)
+                features['num_external_scripts'] = np.random.poisson(3)
+                features['num_external_resources'] = np.random.poisson(5)
+                features['num_iframes'] = 0
+                features['has_meta_refresh'] = 0
+                features['has_redirect'] = 0
+                features['num_hidden_elements'] = np.random.poisson(1)
+                features['num_external_links'] = np.random.poisson(10)
+                label = 0
+                
+            elif site_type == 'suspicious':
+                features['domain_age_days'] = np.random.randint(30, 180)
+                features['ssl_valid'] = np.random.choice([0, 1], p=[0.4, 0.6])
+                features['suspicious_tld'] = np.random.choice([0, 1], p=[0.6, 0.4])
+                features['num_suspicious_patterns'] = np.random.poisson(3)
+                features['scam_word_count'] = np.random.poisson(8)
+                features['has_brand_impersonation'] = np.random.choice([0, 1], p=[0.7, 0.3])
+                features['num_forms'] = np.random.poisson(2)
+                features['num_password_forms'] = np.random.choice([0, 1], p=[0.5, 0.5])
+                features['days_to_expiry'] = np.random.randint(30, 100)
+                features['has_ip'] = np.random.choice([0, 1], p=[0.9, 0.1])
+                features['num_digits'] = np.random.poisson(4)
+                features['num_external_scripts'] = np.random.poisson(6)
+                features['num_external_resources'] = np.random.poisson(10)
+                features['num_iframes'] = np.random.poisson(1)
+                features['has_meta_refresh'] = np.random.choice([0, 1], p=[0.8, 0.2])
+                features['has_redirect'] = np.random.choice([0, 1], p=[0.7, 0.3])
+                features['num_hidden_elements'] = np.random.poisson(3)
+                features['num_external_links'] = np.random.poisson(20)
+                label = 1
+                
+            elif site_type == 'casino':
+                features['domain_age_days'] = np.random.randint(1, 60)
+                features['ssl_valid'] = np.random.choice([0, 1], p=[0.3, 0.7])
+                features['suspicious_tld'] = np.random.choice([0, 1], p=[0.4, 0.6])
+                features['num_suspicious_patterns'] = np.random.poisson(5)
+                features['scam_word_count'] = np.random.poisson(15)
+                features['has_brand_impersonation'] = np.random.choice([0, 1], p=[0.5, 0.5])
+                features['num_forms'] = np.random.poisson(3)
+                features['num_password_forms'] = np.random.choice([0, 1], p=[0.3, 0.7])
+                features['days_to_expiry'] = np.random.randint(1, 60)
+                features['has_ip'] = np.random.choice([0, 1], p=[0.8, 0.2])
+                features['num_digits'] = np.random.poisson(5)
+                features['num_external_scripts'] = np.random.poisson(8)
+                features['num_external_resources'] = np.random.poisson(12)
+                features['num_iframes'] = np.random.poisson(2)
+                features['has_meta_refresh'] = np.random.choice([0, 1], p=[0.6, 0.4])
+                features['has_redirect'] = np.random.choice([0, 1], p=[0.6, 0.4])
+                features['num_hidden_elements'] = np.random.poisson(4)
+                features['num_external_links'] = np.random.poisson(25)
+                
+                features['casino_keywords_count'] = np.random.randint(3, 15)
+                features['has_casino_in_url'] = np.random.choice([0, 1], p=[0.2, 0.8])
+                features['casino_confidence_score'] = np.random.choice([1, 2, 3], p=[0.2, 0.3, 0.5])
+                label = 1
+                
+            else: 
+                features['domain_age_days'] = np.random.randint(1, 30)
+                features['ssl_valid'] = np.random.choice([0, 1], p=[0.8, 0.2])
+                features['suspicious_tld'] = np.random.choice([0, 1], p=[0.3, 0.7])
+                features['num_suspicious_patterns'] = np.random.poisson(8)
+                features['scam_word_count'] = np.random.poisson(20)
+                features['has_brand_impersonation'] = np.random.choice([0, 1], p=[0.3, 0.7])
+                features['num_forms'] = np.random.poisson(3)
+                features['num_password_forms'] = np.random.choice([0, 1], p=[0.2, 0.8])
+                features['days_to_expiry'] = np.random.randint(1, 30)
+                features['has_ip'] = np.random.choice([0, 1], p=[0.7, 0.3])
+                features['num_digits'] = np.random.poisson(6)
+                features['num_external_scripts'] = np.random.poisson(10)
+                features['num_external_resources'] = np.random.poisson(15)
+                features['num_iframes'] = np.random.poisson(3)
+                features['has_meta_refresh'] = np.random.choice([0, 1], p=[0.5, 0.5])
+                features['has_redirect'] = np.random.choice([0, 1], p=[0.5, 0.5])
+                features['num_hidden_elements'] = np.random.poisson(5)
+                features['num_external_links'] = np.random.poisson(30)
+                features['casino_keywords_count'] = np.random.poisson(1)
+                features['has_casino_in_url'] = np.random.choice([0, 1], p=[0.7, 0.3])
+                features['casino_confidence_score'] = np.random.choice([0, 1], p=[0.7, 0.3])
+                label = 1
+            
+            for feature in self.structural_features:
+                if feature not in features:
+                    if 'num_' in feature or 'count' in feature:
+                        features[feature] = np.random.poisson(1)
+                    elif 'has_' in feature:
+                        features[feature] = np.random.choice([0, 1])
+                    else:
+                        features[feature] = np.random.randn() * 0.5
+            
+            data.append([features[name] for name in self.structural_features])
+            labels.append(label)
+        
+        return np.array(data), np.array(labels)
+    
+    def train(self, scan_results=None, labels=None, use_synthetic=True):
+        """Обучение модели"""
+        if scan_results and labels:
+            X_list = []
+            for result in scan_results:
+                features = self.extract_features_from_scan(result)
+                X_list.append(features.flatten())
+            X = np.array(X_list)
+            y = np.array(labels)
+            
+        elif use_synthetic:
+            logger.info("Creating enhanced synthetic dataset with casino detection...")
+            X, y = self.create_sample_dataset(3000) 
+            
+        else:
+            raise ValueError("No training data provided")
+        
+        X_scaled = self.scaler.fit_transform(X)
+        
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_scaled, y, test_size=0.2, random_state=42, stratify=y
+        )
+
+        logger.info("Training Random Forest model with casino detection...")
+        self.model = RandomForestClassifier(
+            n_estimators=250,  
+            max_depth=25,
+            min_samples_split=4,
+            min_samples_leaf=2,
+            random_state=42,
+            class_weight='balanced',
+            n_jobs=-1
+        )
+        
+        self.model.fit(X_train, y_train)
+        
+        y_pred = self.model.predict(X_test)
+        
+        accuracy = accuracy_score(y_test, y_pred)
+        precision = precision_score(y_test, y_pred)
+        recall = recall_score(y_test, y_pred)
+        f1 = f1_score(y_test, y_pred)
+        
+        logger.info(f"Model trained successfully!")
+        logger.info(f"Accuracy: {accuracy:.3f}")
+        logger.info(f"Precision: {precision:.3f}")
+        logger.info(f"Recall: {recall:.3f}")
+        logger.info(f"F1 Score: {f1:.3f}")
+        
+        feature_importance = pd.DataFrame({
+            'feature': self.structural_features,
+            'importance': self.model.feature_importances_
+        }).sort_values('importance', ascending=False)
+        
+        logger.info("\nTop 15 most important features:")
+        for idx, row in feature_importance.head(15).iterrows():
+            importance_pct = row['importance'] * 100
+            logger.info(f"  {row['feature']}: {importance_pct:.1f}%")
+        
         return {
-            'url_length': len(domain),
-            'num_dots': domain.count('.'),
-            'num_hyphens': domain.count('-'),
-            'num_digits': sum(c.isdigit() for c in domain),
-            'has_ip': 0,
-            'subdomain_count': len(domain.split('.')) - 2,
-            'suspicious_tld': domain.endswith(('.xyz', '.top', '.club', '.online'))
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'f1': f1,
+            'feature_importance': feature_importance.head(15).to_dict('records')
         }
     
-    async def auto_train(self, force: bool = False) -> Optional[dict]:
-        """
-        Автоматическое обучение модели
-        Запускается раз в training_interval
-        """
-    
-        if self.is_training:
-            logger.warning("⚠️ Обучение уже выполняется")
-            return None
-        
-   
-        now = datetime.now()
-        if not force and self.last_train_time:
-            if now - self.last_train_time < self.training_interval:
-                time_left = self.training_interval - (now - self.last_train_time)
-                logger.info(f"⏳ Следующее обучение через {time_left}")
-                return None
-        
-        self.is_training = True
-        start_time = time.time()
+    def predict(self, scan_result: dict) -> dict:
+        """Предсказание для одного результата сканирования"""
+        if self.model is None:
+            logger.warning("Model not trained, loading default...")
+            self.load_model()
+            
+            if self.model is None:
+                return {
+                    'is_malicious': False,
+                    'confidence': 0,
+                    'probability_malicious': 0.5,
+                    'probability_safe': 0.5,
+                    'risk_level': 'Unknown',
+                    'important_factors': [],
+                    'warning': 'Model not trained'
+                }
         
         try:
-            logger.info("="*60)
-            logger.info("🚀 ЗАПУСК АВТОМАТИЧЕСКОГО ОБУЧЕНИЯ")
-            logger.info("="*60)
+            features = self.extract_features_from_scan(scan_result)
+            features_scaled = self.scaler.transform(features)
             
-           
-            scan_results, labels = await self.collect_training_data(limit=2000)
+            proba = self.model.predict_proba(features_scaled)[0]
+            prediction = self.model.predict(features_scaled)[0]
             
-            if len(scan_results) < self.min_samples_for_train:
-                logger.warning(f"⚠️ Недостаточно данных: {len(scan_results)} < {self.min_samples_for_train}")
-                
-               
-                if len(scan_results) > 50:
-                    logger.info("➕ Добавляем синтетические данные...")
-                    synthetic_ratio = max(0.5, 1 - len(scan_results) / self.min_samples_for_train)
-                    metrics = self.ai_model.train(
-                        scan_results=scan_results,
-                        labels=labels,
-                        use_synthetic=True,
-                        synthetic_ratio=synthetic_ratio
-                    )
-                else:
-                   
-                    logger.info("🔄 Используем только синтетические данные")
-                    metrics = self.ai_model.train(use_synthetic=True)
+            if len(proba) > 1:
+                prob_malicious = float(proba[1])
+                prob_safe = float(proba[0])
             else:
-               
-                logger.info(f"✅ Обучаем на {len(scan_results)} реальных образцах")
-                metrics = self.ai_model.train(
-                    scan_results=scan_results,
-                    labels=labels,
-                    use_synthetic=False
-                )
+                prob_malicious = float(proba[0])
+                prob_safe = 1 - prob_malicious
             
+            confidence = float(max(proba))
             
-            self.ai_model.save_model()
-            
-            
-            training_time = time.time() - start_time
-            self.last_train_time = now
-            self.training_stats['total_trainings'] += 1
-            self.training_stats['last_accuracy'] = metrics.get('accuracy', 0)
-            self.training_stats['total_samples'] += len(scan_results)
-            
-            logger.info("="*60)
-            logger.info(f"✅ ОБУЧЕНИЕ ЗАВЕРШЕНО за {training_time:.1f}с")
-            logger.info(f"📊 Точность: {metrics.get('accuracy', 0):.3f}")
-            logger.info(f"📈 Всего обучений: {self.training_stats['total_trainings']}")
-            logger.info("="*60)
+            important_factors = self._get_important_factors(scan_result)
             
             return {
-                **metrics,
-                'training_time': training_time,
-                'samples_used': len(scan_results),
-                'training_time': now.isoformat()
+                'is_malicious': bool(prediction),
+                'confidence': confidence,
+                'probability_malicious': prob_malicious,
+                'probability_safe': prob_safe,
+                'risk_level': self._compute_risk_level(scan_result, prob_malicious),
+                'important_factors': important_factors,
+                'timestamp': datetime.now().isoformat()
             }
             
         except Exception as e:
-            logger.error(f"❌ Ошибка обучения: {e}")
-            self.training_stats['errors'].append({
-                'time': now.isoformat(),
+            logger.error(f"Prediction error: {e}")
+            return {
+                'is_malicious': False,
+                'confidence': 0,
+                'probability_malicious': 0.5,
+                'probability_safe': 0.5,
+                'risk_level': 'Error',
+                'important_factors': [],
                 'error': str(e)
-            })
-            return None
-            
-        finally:
-            self.is_training = False
+            }
     
-    async def incremental_update(self, new_scan_result: dict, label: int):
-        """
-        Инкрементальное обновление модели новым образцом
-        """
-      
-        logger.debug(f"📝 Новый образец для обучения: {new_scan_result.get('url')} -> {label}")
+    def _compute_risk_level(self, scan_result, prob_malicious):
+        """Вычисление уровня риска"""
+        factors = self._get_important_factors(scan_result)
         
-     
-        if self.last_train_time:
-            time_since_train = datetime.now() - self.last_train_time
-            if time_since_train > self.training_interval / 2:
-              
-                asyncio.create_task(self.auto_train())
-    
-    def get_training_status(self) -> dict:
-        """Статус обучения"""
-        status = {
-            'is_training': self.is_training,
-            'last_train': self.last_train_time.isoformat() if self.last_train_time else None,
-            'next_train': (self.last_train_time + self.training_interval).isoformat() if self.last_train_time else None,
-            'training_interval_hours': self.training_interval.total_seconds() / 3600,
-            'min_samples': self.min_samples_for_train,
-            'stats': self.training_stats,
-            'model_info': self.ai_model.get_model_info()
-        }
-        return status
-    
-    async def force_train(self) -> dict:
-        """Принудительное обучение"""
-        logger.info("⚡ Принудительное обучение")
-        return await self.auto_train(force=True)
-
-
-
-class BackgroundTrainer:
-    """Фоновый тренер для периодического обучения"""
-    
-    def __init__(self, trainer: AIAutoTrainer, check_interval: int = 3600):
-        self.trainer = trainer
-        self.check_interval = check_interval  
-        self.running = False
-        self.thread = None
-    
-    def start(self):
-        """Запуск фонового обучения"""
-        if self.running:
-            return
+        weight_map = {'low': 0.1, 'medium': 0.2, 'high': 0.3, 'critical': 0.4}
+        total_weight = sum(weight_map.get(f.get('weight', 'low'), 0.1) for f in factors)
         
-        self.running = True
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-        logger.info(f"🔄 Фоновый тренер запущен (проверка каждые {self.check_interval}с)")
-    
-    def stop(self):
-        """Остановка фонового обучения"""
-        self.running = False
-        if self.thread:
-            self.thread.join(timeout=5)
-        logger.info("⏹️ Фоновый тренер остановлен")
-    
-    def _run(self):
-        """Основной цикл фонового обучения"""
-        import asyncio
+        deep_scan = scan_result.get('deep_scan', {})
+        casino_analysis = deep_scan.get('casino_analysis', {})
+        if casino_analysis.get('is_casino'):
+            casino_conf = casino_analysis.get('confidence', 'low')
+            if casino_conf == 'high':
+                total_weight += 0.3
+            elif casino_conf == 'medium':
+                total_weight += 0.2
+            else:
+                total_weight += 0.1
         
-        while self.running:
-            try:
-               
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
+        score = min(prob_malicious + total_weight, 1.0)
         
-                loop.run_until_complete(self.trainer.auto_train())
-                
-                loop.close()
-                
-            except Exception as e:
-                logger.error(f"Ошибка в фоновом тренере: {e}")
-            
-           
-            time.sleep(self.check_interval)
+        if score < 0.2:
+            return "Very Low"
+        elif score < 0.4:
+            return "Low"
+        elif score < 0.6:
+            return "Medium"
+        elif score < 0.8:
+            return "High"
+        else:
+            return "Critical"
 
-
-
-ai_trainer = AIAutoTrainer()
-background_trainer = BackgroundTrainer(ai_trainer)
-
-
-async def auto_train_background():
-    """Запуск автоматического обучения в фоне (asyncio версия)"""
-    logger.info("🔄 Автоматическое обучение запущено")
-    
-    while True:
+    def _get_important_factors(self, scan_result: dict) -> list:
+        """Получение важных факторов для объяснения"""
+        factors = []
+        
         try:
-            await ai_trainer.auto_train()
+            level1 = scan_result.get('level1', {})
+            deep_scan = scan_result.get('deep_scan', {})
             
+            # SSL проверка
+            ssl = level1.get('ssl_analysis', {})
+            if not ssl.get('valid'):
+                factors.append({
+                    'factor': 'no_ssl',
+                    'description': 'Отсутствует валидный SSL сертификат',
+                    'weight': 'high'
+                })
+            elif ssl.get('days_until_expiry', 999) < 7:
+                factors.append({
+                    'factor': 'ssl_expiring',
+                    'description': 'SSL сертификат скоро истекает',
+                    'weight': 'medium'
+                })
             
-            await asyncio.sleep(1800)
+            # WHOIS анализ
+            whois = level1.get('whois_analysis', {})
+            domain_age = whois.get('domain_age_days')
+            if domain_age:
+                if domain_age < 7:
+                    factors.append({
+                        'factor': 'very_young_domain',
+                        'description': f'Домен создан {domain_age} дней назад (очень свежий)',
+                        'weight': 'critical'
+                    })
+                elif domain_age < 30:
+                    factors.append({
+                        'factor': 'young_domain',
+                        'description': f'Домен создан {domain_age} дней назад',
+                        'weight': 'high'
+                    })
+                elif domain_age < 90:
+                    factors.append({
+                        'factor': 'relatively_new_domain',
+                        'description': f'Домену меньше 3 месяцев ({domain_age} дней)',
+                        'weight': 'medium'
+                    })
             
+            # Приватный WHOIS
+            if whois.get('is_private'):
+                factors.append({
+                    'factor': 'private_whois',
+                    'description': 'Приватная регистрация WHOIS',
+                    'weight': 'low'
+                })
+            
+            # DNS анализ
+            dns = level1.get('dns_analysis', {})
+            if not dns.get('has_dns'):
+                factors.append({
+                    'factor': 'no_dns',
+                    'description': 'Домен не резолвится',
+                    'weight': 'critical'
+                })
+            elif not dns.get('has_mx'):
+                factors.append({
+                    'factor': 'no_mx',
+                    'description': 'Нет MX записей',
+                    'weight': 'medium'
+                })
+            
+            # URL анализ
+            url_analysis = level1.get('url_analysis', {})
+            if url_analysis.get('has_ip'):
+                factors.append({
+                    'factor': 'ip_in_url',
+                    'description': 'URL содержит IP-адрес вместо домена',
+                    'weight': 'high'
+                })
+            if url_analysis.get('suspicious_tld'):
+                factors.append({
+                    'factor': 'suspicious_tld',
+                    'description': 'Подозрительная доменная зона',
+                    'weight': 'high'
+                })
+            if url_analysis.get('url_length', 0) > 100:
+                factors.append({
+                    'factor': 'long_url',
+                    'description': 'Необычно длинный URL',
+                    'weight': 'medium'
+                })
+            
+            # Глубокий анализ
+            if deep_scan:
+                # Имитация бренда
+                if deep_scan.get('brand_impersonation'):
+                    factors.append({
+                        'factor': 'brand_impersonation',
+                        'description': f"Имитация бренда: {deep_scan['brand_impersonation']}",
+                        'weight': 'critical'
+                    })
+                
+                # Формы
+                forms = deep_scan.get('form_analysis', [])
+                password_forms = [f for f in forms if f.get('has_password')]
+                if password_forms:
+                    external_forms = [f for f in password_forms if f.get('external_action')]
+                    if external_forms:
+                        factors.append({
+                            'factor': 'external_password_forms',
+                            'description': f"Формы с паролями отправляются на внешние домены",
+                            'weight': 'critical'
+                        })
+                    else:
+                        factors.append({
+                            'factor': 'password_forms',
+                            'description': f"Обнаружено {len(password_forms)} форм с паролями",
+                            'weight': 'high'
+                        })
+                
+
+                suspicious = deep_scan.get('suspicious_patterns', [])
+                if suspicious:
+                    factors.append({
+                        'factor': 'suspicious_patterns',
+                        'description': f"Найдено {len(suspicious)} подозрительных паттернов",
+                        'weight': 'medium'
+                    })
+                
+                casino_analysis = deep_scan.get('casino_analysis', {})
+                if casino_analysis.get('is_casino'):
+                    casino_conf = casino_analysis.get('confidence', 'low')
+                    indicators = casino_analysis.get('indicators', [])
+                    
+                    if casino_conf == 'high':
+                        weight = 'critical'
+                        desc = f"🎰 ОНЛАЙН-КАЗИНО (высокая уверенность)"
+                    elif casino_conf == 'medium':
+                        weight = 'high'
+                        desc = f"🎰 Подозрение на онлайн-казино"
+                    else:
+                        weight = 'medium'
+                        desc = f"🎰 Возможные признаки казино"
+                    
+                    if indicators:
+                        desc += f": {', '.join(indicators[:3])}"
+                    
+                    factors.append({
+                        'factor': 'casino_detected',
+                        'description': desc,
+                        'weight': weight
+                    })
+                
+                url = scan_result.get('url', '').lower()
+                for brand in self.casino_brands:
+                    if brand in url and brand not in [f.get('description', '') for f in factors]:
+                        factors.append({
+                            'factor': 'casino_in_url',
+                            'description': f"URL содержит признак казино: '{brand}'",
+                            'weight': 'medium'
+                        })
+                        break
+                    
         except Exception as e:
-            logger.error(f"Ошибка в фоновом обучении: {e}")
-            await asyncio.sleep(300)  
-
-
-
-def init_auto_trainer():
-    """Инициализация авто-тренера при старте"""
-   
-    ai_trainer._load_existing_model()
+            logger.error(f"Error getting important factors: {e}")
+        
+        if not factors:
+            factors.append({
+                'factor': 'normal_site',
+                'description': 'Сайт не содержит явных признаков угрозы',
+                'weight': 'low'
+            })
+        
+        return factors
     
+    def predict_batch(self, scan_results: list) -> list:
+        """Пакетное предсказание"""
+        predictions = []
+        for result in scan_results:
+            predictions.append(self.predict(result))
+        return predictions
     
-    background_trainer.start()
+    def save_model(self, path=None):
+        """Сохранение модели"""
+        if path is None:
+            path = self.model_path
+        
+        model_data = {
+            'model': self.model,
+            'scaler': self.scaler,
+            'text_vectorizer': self.text_vectorizer,
+            'structural_features': self.structural_features,
+            'feature_weights': self.feature_weights,
+            'casino_keywords': self.casino_keywords,
+            'casino_brands': self.casino_brands,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        joblib.dump(model_data, path)
+        logger.info(f"Model saved to {path}")
     
-    logger.info("✅ Авто-тренер инициализирован")
+    def load_model(self, path=None):
+        """Загрузка модели"""
+        if path is None:
+            path = self.model_path
+        
+        if os.path.exists(path):
+            try:
+                model_data = joblib.load(path)
+                self.model = model_data['model']
+                self.scaler = model_data['scaler']
+                self.text_vectorizer = model_data['text_vectorizer']
+                self.structural_features = model_data.get('structural_features', self.structural_features)
+                self.feature_weights = model_data.get('feature_weights', self.feature_weights)
+                self.casino_keywords = model_data.get('casino_keywords', self.casino_keywords)
+                self.casino_brands = model_data.get('casino_brands', self.casino_brands)
+                logger.info(f"Model loaded from {path}")
+                return True
+            except Exception as e:
+                logger.error(f"Error loading model: {e}")
+                return False
+        else:
+            logger.warning(f"Model file {path} not found")
+            return False
+    
+    def get_model_info(self) -> dict:
+        """Информация о модели"""
+        info = {
+            'model_type': type(self.model).__name__ if self.model else 'Not trained',
+            'num_features': len(self.structural_features),
+            'features': self.structural_features[:10],
+            'feature_weights': self.feature_weights,
+            'casino_detection_enabled': True,
+            'casino_keywords_count': len(self.casino_keywords)
+        }
+        
+        if self.model:
+            info['n_classes'] = len(self.model.classes_)
+            info['n_estimators'] = self.model.n_estimators if hasattr(self.model, 'n_estimators') else None
+        
+        return info
 
+ai_model = CyberScanAI()
 
+def analyze(url: str) -> None:
+    """Анализ одного URL (для тестирования)"""
+    from collector import scan_url_async
+    import asyncio
+    
+    scan_result = asyncio.run(scan_url_async(url))
+    prediction = ai_model.predict(scan_result)
+    print(json.dumps(prediction, indent=2, ensure_ascii=False))
+
+def train_from_database(db_path='cyberscan.db'):
+    """Обучение из базы данных"""
+    import sqlite3
+    
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    
+    c.execute("SELECT result, is_malicious FROM scans WHERE is_malicious IS NOT NULL")
+    rows = c.fetchall()
+    conn.close()
+    
+    if len(rows) < 10:
+        logger.warning(f"Not enough data in database ({len(rows)} samples), using synthetic data")
+        return ai_model.train(use_synthetic=True)
+    
+    scan_results = []
+    labels = []
+    
+    for result_json, label in rows:
+        try:
+            result = json.loads(result_json)
+            scan_results.append(result)
+            labels.append(label)
+        except:
+            continue
+    
+    logger.info(f"Training on {len(scan_results)} samples from database")
+    return ai_model.train(scan_results, labels)
 
 if __name__ == "__main__":
-    print("="*60)
-    print("🤖 AI AUTO TRAINER")
-    print("="*60)
+    print("=" * 60)
+    print("CyberScan AI Model with Casino Detection")
+    print("=" * 60)
     
-    trainer = AIAutoTrainer()
+    model = CyberScanAI()
     
-   
-    print("\n📊 Статус до обучения:")
-    status = trainer.get_training_status()
-    print(json.dumps(status, indent=2, default=str))
+    print("\n1. Training on enhanced synthetic data with casino detection...")
+    metrics = model.train(use_synthetic=True)
     
+    print("\n2. Saving model...")
+    model.save_model()
     
-    print("\n🚀 Запуск обучения...")
-    metrics = asyncio.run(trainer.force_train())
+    print("\n3. Testing prediction on safe site...")
+    test_result_safe = {
+        'url': 'https://google.com',
+        'level1': {
+            'ssl_analysis': {'valid': True, 'days_until_expiry': 30},
+            'whois_analysis': {'domain_age_days': 8500, 'expiration_date': (datetime.now().replace(year=datetime.now().year + 1)).isoformat()},
+            'url_analysis': {'suspicious_tld': False, 'has_ip': False, 'url_length': 22},
+            'dns_analysis': {'has_dns': True, 'has_mx': True, 'ip_addresses': ['1.1.1.1']}
+        },
+        'deep_scan': {
+            'form_analysis': [],
+            'suspicious_patterns': [],
+            'brand_impersonation': None,
+            'has_redirect': False,
+            'casino_analysis': {'is_casino': False},
+            'content_analysis': {
+                'scam_word_count': 0,
+                'num_iframes': 0,
+                'num_external_links': 5,
+                'num_hidden_elements': 0,
+                'has_meta_refresh': False
+            }
+        }
+    }
     
-    if metrics:
-        print("\n✅ Результаты обучения:")
-        print(f"   Точность: {metrics.get('accuracy', 0):.3f}")
-        print(f"   Precision: {metrics.get('precision', 0):.3f}")
-        print(f"   Recall: {metrics.get('recall', 0):.3f}")
-        print(f"   F1: {metrics.get('f1', 0):.3f}")
+    prediction_safe = model.predict(test_result_safe)
+    print(f"Safe site prediction: {json.dumps(prediction_safe, indent=2, ensure_ascii=False)}")
     
- 
-    print("\n📊 Статус после обучения:")
-    status = trainer.get_training_status()
-    print(json.dumps(status, indent=2, default=str))
+    print("\n4. Testing prediction on casino site...")
+    test_result_casino = {
+        'url': 'http://vulkan-casino-777.com',
+        'level1': {
+            'ssl_analysis': {'valid': False, 'days_until_expiry': -1},
+            'whois_analysis': {'domain_age_days': 5, 'is_private': True},
+            'url_analysis': {'suspicious_tld': True, 'has_ip': False, 'url_length': 35},
+            'dns_analysis': {'has_dns': True, 'has_mx': False, 'ip_addresses': []}
+        },
+        'deep_scan': {
+            'form_analysis': [{'has_password': True, 'external_action': True}],
+            'suspicious_patterns': ['Подозрительное слово: casino', 'Подозрительное слово: бонус'],
+            'brand_impersonation': None,
+            'has_redirect': True,
+            'casino_analysis': {
+                'is_casino': True, 
+                'confidence': 'high', 
+                'indicators': ['vulkan', 'казино', 'бонус', 'слоты', 'джекпот']
+            },
+            'content_analysis': {
+                'scam_word_count': 25,
+                'num_iframes': 3,
+                'num_external_links': 30,
+                'num_hidden_elements': 5,
+                'has_meta_refresh': True
+            }
+        }
+    }
     
-    print("\n✅ Авто-тренер готов!")
+    prediction_casino = model.predict(test_result_casino)
+    print(f"Casino site prediction: {json.dumps(prediction_casino, indent=2, ensure_ascii=False)}")
+
+    print("\n5. Model info:")
+    info = model.get_model_info()
+    print(json.dumps(info, indent=2, default=str))
+    
+    print("\n✅ Enhanced AI Model with Casino Detection ready!") 
