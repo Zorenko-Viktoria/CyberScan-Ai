@@ -1685,6 +1685,37 @@
                     </div>
                 </div>
 
+                <div class="stats-grid" style="margin-top: 20px;">
+                     <div class="stat-card">
+                        <i class="fas fa-brain" style="color: #8b5cf6;"></i>
+        <div class="stat-value" id="aiLastTraining">-</div>
+        <div class="stat-label">Последнее обучение AI</div>
+    </div>
+    <div class="stat-card">
+        <i class="fas fa-chart-line" style="color: #8b5cf6;"></i>
+        <div class="stat-value" id="aiAccuracy">-</div>
+        <div class="stat-label">Точность модели</div>
+                     </div>
+                </div>
+                <script>
+                    async function loadAiStats() {
+                        try {
+        const response = await fetch('/api/ai/training-stats');
+        const data = await response.json();
+        
+        if (data.success) {
+            document.getElementById('aiLastTraining').textContent = 
+                data.stats.last_training ? new Date(data.stats.last_training).toLocaleDateString() : 'Нет данных';
+            document.getElementById('aiAccuracy').textContent = 
+                data.stats.last_accuracy ? (data.stats.last_accuracy * 100).toFixed(1) + '%' : '-';
+        }
+    } catch (error) {
+        console.error('Error loading AI stats:', error);
+    }
+     }
+     
+                </script>
+
                 <div class="control-panel">
                     <div class="filter-group">
                         <span class="filter-label">
@@ -1803,18 +1834,16 @@
             // Настройка навигации
             setupNavigation();
             
-            // Загрузка данных для главной страницы
             loadStats();
             
-            // Загрузка данных для мониторинга (если нужно)
             if (window.location.pathname === '/monitor') {
                 showMonitorPage();
                 loadMonitorData();
+                loadAiStats();
             }
         });
 
         function setupNavigation() {
-            // Навигация по страницам
             document.getElementById('homeLink').addEventListener('click', function(e) {
                 e.preventDefault();
                 showHomePage();
@@ -1828,17 +1857,16 @@
                 window.history.pushState({}, '', '/monitor');
             });
 
-            // Обработка кнопки назад
             window.addEventListener('popstate', function() {
                 if (window.location.pathname === '/monitor') {
                     showMonitorPage();
                     loadMonitorData();
+                    loadAiStats();
                 } else {
                     showHomePage();
                 }
             });
 
-            // Обработчики для модалок
             document.getElementById('statsLink').addEventListener('click', function(e) {
                 e.preventDefault();
                 document.getElementById('statsModal').style.display = 'block';
@@ -1907,6 +1935,7 @@
         function loadMonitorData() {
             loadMonitorSites();
             loadTrendData();
+            loadAiStats();
         }
 
         // ========== ФУНКЦИИ ДЛЯ ГЛАВНОЙ СТРАНИЦЫ ==========
