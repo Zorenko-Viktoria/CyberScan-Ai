@@ -1,170 +1,179 @@
-import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse
-import ssl
-import socket
-import whois
-from datetime import datetime
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from bs4 import BeautifulSoup 
+from sklearn.neural_network import MLPClassifier
 from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.cluster import DBSCAN
 import joblib
+from urllib.parse import urlparse
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import warnings
+import hashlib
+import difflib
+from collections import Counter
 warnings.filterwarnings('ignore')
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class CyberScanAI:
+class AntiPhishingAI:
+    """
+    Усиленная AI-система для обнаружения фишинга
+    с поддержкой браузерного расширения
+    """
     
-    def __init__(self, model_path='cyberscan_model.pkl'):
+    def __init__(self, model_path='anti_phishing_model.pkl'):
         self.model_path = model_path
         self.model = None
-        self.scaler = StandardScaler()
+        self.scaler = RobustScaler()  
         self.text_vectorizer = TfidfVectorizer(
-            max_features=500,
-            stop_words='english',
-            ngram_range=(1, 3)
+            max_features=1000, 
+            stop_words=['english', 'russian'], 
+            ngram_range=(1, 4),  
+            analyzer='char_wb', 
+            sublinear_tf=True
         )
         
-        self.structural_features = [
+        self.phishing_features = [
             'url_length',
             'num_dots',
             'num_hyphens',
             'num_digits',
+            'num_slashes',
+            'num_params',
             'has_ip',
+            'has_at_symbol',
+            'has_double_slash',
             'subdomain_count',
             'suspicious_tld',
-            'path_length',
-            'num_query_params',
-            'special_chars_count',
-            
+            'entropy',  
+            'punycode',
+            'https_mismatch',
+            'port_suspicious', 
             'has_dns',
             'has_mx',
+            'has_txt',
             'num_ip_addresses',
-            'num_ns_servers',
-            
+            'same_ip_different_domains',
+            'domain_resolves',
+            'dns_sec',
             'domain_age_days',
-            'is_private_whois',
             'days_to_expiry',
-            
+            'is_private_whois',
+            'registrar_reputation',
+            'creation_hour', 
+            'updated_recently',
+            'days_since_update',
+            'registrar_country',
             'ssl_valid',
             'ssl_days_until_expiry',
-            
+            'ssl_issuer_reputation',
+            'self_signed',
+            'ssl_version',
+            'cert_matches_domain',
+            'ssl_grade',
             'num_forms',
             'num_password_forms',
-            'num_external_scripts',
-            'num_external_resources',
-            'scam_word_count',
-            'has_brand_impersonation',
-            'num_suspicious_patterns',
+            'num_hidden_inputs',
+            'external_form_action',
+            'form_action_url_similarity', 
             'num_iframes',
+            'num_external_scripts',
+            'num_obfuscated_scripts',
             'has_meta_refresh',
             'has_redirect',
-            'num_hidden_elements',
             'num_external_links',
-            
-            'casino_keywords_count',
-            'has_casino_in_url',
-            'casino_confidence_score'
+            'num_hidden_elements',
+            'login_form_count',
+            'credit_card_fields',
+            'sensitive_keywords_count',
+            'title_similarity',
+            'logo_present',
+            'logo_similarity',
+            'color_scheme_match', 
+            'layout_similarity',  
+            'favicon_match', 
+            'brand_mentions', 
+            'brand_density', 
+            'data_exfiltration_risk',  
+            'keylogger_detected',
+            'clipboard_access',
+            'geolocation_request',
+            'camera_mic_request'
         ]
         
-        self.feature_weights = {
-            'structural': 0.3,
-            'text': 0.3,
-            'behavioral': 0.4
+        self.brands = {
+            'kaspi': {
+                'url': 'kaspi.kz',
+                'title': 'Kaspi.kz',
+                'keywords': ['kaspi', 'магазин', 'оплата', 'кредит'],
+                'logo_hash': 'a1b2c3d4...',
+                'favicon_hash': 'e5f6g7h8...',
+                'color_scheme': ['#f00', '#fff', '#000']
+            },
+            'paypal': {
+                'url': 'paypal.com',
+                'title': 'PayPal',
+                'keywords': ['paypal', 'payment', 'send money'],
+                'logo_hash': 'i9j0k1l2...',
+                'favicon_hash': 'm3n4o5p6...',
+                'color_scheme': ['#003087', '#009cde', '#fff']
+            },
+            'halyk': {
+                'url': 'halykbank.kz',
+                'title': 'Halyk Bank',
+                'keywords': ['halyk', 'банк', 'homebank'],
+                'logo_hash': 'q7r8s9t0...',
+                'favicon_hash': 'u1v2w3x4...',
+                'color_scheme': ['#00a651', '#fff', '#000']
+            }
         }
         
-
-        self.casino_keywords = {
-    'casino', 'vulkan', 'pinup', 'pin-up', 'joycasino', 'mostbet', '1xbet', '1xslots',
-    'slots', 'roulette', 'blackjack', 'poker', 'freespins', 'jackpot',
-    'online casino', 'best casino', 'top casino', 'casino online',
-    'vulkan casino', 'joy casino', 'azino',
-    'mirror', 'official', 'bonus', 'win', 'play', 'freespin', 'reward', 'claim',
-    'free bonus', 'bonus without deposit', 'instant win', 'quick payout', 'real money',
-    'get your bonus', 'vip casino', 'exclusive offer', 'big win', 'fast withdrawal',
-    'daily bonus', 'hot slots', 'new slot', 'mega jackpot', 'big prize', 'register now',
-    'sign up bonus', 'casino games', 'live casino', 'online slots', 'mobile casino',
-    'free spin', 'spin and win', 'slot machine', 'gamble', 'high roller', 'instant cash',
-    'play and win', 'casino app', 'exclusive bonus', 'top slots', 'win jackpot',
-    'claim free spins', 'vip slots', 'bonus code', 'welcome bonus', 'progressive jackpot',
-    'big payout', 'hot casino', 'new casino', 'fast cash', 'bonus offer', 'daily reward',
-    'instant bonus', 'slot jackpot', 'casino bonus', 'win real money', 'free chips',
-    'casino online free', 'best slots', 'top games', 'live roulette', 'live blackjack',
-    'live poker', 'live dealer', 'jackpot slots', 'mega slots', 'real casino', 'big casino',
-    'high stakes', 'exclusive slots', 'online poker', 'online blackjack', 'online roulette',
-    'slot bonus', 'spin bonus', 'play slots', 'free jackpot', 'big spin', 'vip reward',
-    'casino promo', 'welcome package', 'instant reward', 'super slots', 'mega bonus',
-    'daily spin', 'exclusive jackpot', 'slot games', 'online gambling', 'casino winnings',
-    'fast spin', 'quick win', 'big reward', 'casino spins', 'casino prize', 'free chips bonus',
-    'hot bonus', 'best payout', 'real slots', 'play casino', 'jackpot win', 'online gambling site',
-    'win bonus', 'fast jackpot', 'exclusive casino', 'vip bonus', 'casino match', 'mega payout',
-    'online casino games', 'new slots', 'slot machine bonus', 'casino challenge', 'spin reward',
-    'casino online slots', 'instant jackpot', 'jackpot reward', 'fast reward', 'online jackpot',
-    'vip spins', 'casino deal', 'slot reward', 'mega spin', 'big jackpot', 'daily jackpot',
-    'exclusive spin', 'fast bonus', 'win real cash', 'online slots free', 'casino token',
-    'play and earn', 'spin and earn', 'free chips online', 'top jackpot', 'hot spin', 'slot prize',
-    'quick reward', 'daily bonus reward', 'exclusive chips', 'vip game', 'instant chips', 'real bonus',
-    'mega win', 'jackpot spin', 'online casino vip', 'fast chips', 'free online casino',
-    'casino event', 'special bonus', 'online slot bonus', 'big casino win', 'slot cash',
-    'casino token bonus', 'instant casino', 'casino online vip', 'bonus jackpot', 'hot jackpot',
-    'daily casino', 'exclusive win', 'fast casino', 'mega casino', 'spin jackpot', 'vip slot bonus',
-    'casino online bonus', 'top casino bonus', 'best casino bonus', 'play jackpot', 'quick jackpot',
-    'real casino bonus', 'slot vip', 'casino mega', 'mega reward', 'exclusive mega', 'bonus reward',
-    'hot reward', 'casino free spins', 'online casino jackpot', 'instant spin', 'spin free',
-    'vip casino game', 'casino top', 'bonus play', 'daily reward bonus', 'mega jackpot spin'
-}
-
-        self.casino_brands = {
-    'vulkan', 'joycasino', '1xbet', 'mostbet', 'pinup', 'pin-up', 'azino',
-    'casino', 'slots', 'roulette', 'blackjack', 'poker', 'online casino', 'casino online',
-    'vulkan casino', 'joy casino', 'vip casino', 'top casino', 'best casino',
-    'exclusive casino', 'mega casino', 'hot casino', 'new casino'
-     }
-
-
-    def extract_features_from_scan(self, scan_result: dict) -> np.array:
-        """Извлечение признаков из результата сканирования"""
+    def extract_phishing_features(self, scan_result: dict, html_content: str = None) -> np.array:
+        """Извлечение расширенных признаков для фишинга"""
         features = {}
-        
-        for feature in self.structural_features:
+        for feature in self.phishing_features:
             features[feature] = 0
         
         try:
             level1 = scan_result.get('level1', {})
             deep_scan = scan_result.get('deep_scan', {})
             url = scan_result.get('url', '')
-            
             url_analysis = level1.get('url_analysis', {})
             features['url_length'] = url_analysis.get('url_length', 0)
             features['num_dots'] = url_analysis.get('num_dots', 0)
             features['num_hyphens'] = url_analysis.get('num_hyphens', 0)
             features['num_digits'] = url_analysis.get('num_digits', 0)
             features['has_ip'] = int(url_analysis.get('has_ip', False))
+            parsed = urlparse(url)
+            features['num_slashes'] = parsed.path.count('/')
+            features['num_params'] = len(parsed.query.split('&')) if parsed.query else 0
+            features['has_at_symbol'] = int('@' in url)
+            features['has_double_slash'] = int('//' in parsed.path)
             features['subdomain_count'] = url_analysis.get('subdomain_count', 0)
             features['suspicious_tld'] = int(url_analysis.get('suspicious_tld', False))
-            features['path_length'] = url_analysis.get('path_length', 0)
-            features['num_query_params'] = url_analysis.get('num_query_params', 0)
-            features['special_chars_count'] = url_analysis.get('special_chars_count', 0)
-            
+            url_chars = url.lower()
+            char_counts = Counter(url_chars)
+            total_chars = len(url_chars)
+            entropy = -sum((count/total_chars) * np.log2(count/total_chars) 
+                          for count in char_counts.values())
+            features['entropy'] = entropy
+            features['punycode'] = int('xn--' in url)
             dns_analysis = level1.get('dns_analysis', {})
             features['has_dns'] = int(dns_analysis.get('has_dns', False))
             features['has_mx'] = int(dns_analysis.get('has_mx', False))
+            features['has_txt'] = int(dns_analysis.get('has_txt', False))
             features['num_ip_addresses'] = len(dns_analysis.get('ip_addresses', []))
-            features['num_ns_servers'] = len(dns_analysis.get('ns_servers', []))
-            
             whois_analysis = level1.get('whois_analysis', {})
-            features['domain_age_days'] = whois_analysis.get('domain_age_days', -1)
-            features['is_private_whois'] = int(whois_analysis.get('is_private', False))
+            domain_age = whois_analysis.get('domain_age_days', -1)
+            features['domain_age_days'] = domain_age
             
             if whois_analysis.get('expiration_date'):
                 try:
@@ -175,207 +184,167 @@ class CyberScanAI:
             else:
                 features['days_to_expiry'] = 0
             
+            features['is_private_whois'] = int(whois_analysis.get('is_private', False))
+            
+            if whois_analysis.get('creation_date'):
+                try:
+                    creation = datetime.fromisoformat(whois_analysis['creation_date'].replace('Z', '+00:00'))
+                    features['creation_hour'] = creation.hour
+                    features['updated_recently'] = int((datetime.now() - creation).days < 7)
+                except:
+                    features['creation_hour'] = 0
+                    features['updated_recently'] = 0
+            
             ssl_analysis = level1.get('ssl_analysis', {})
             features['ssl_valid'] = int(ssl_analysis.get('valid', False))
             features['ssl_days_until_expiry'] = ssl_analysis.get('days_until_expiry', -1)
-            
-            url_lower = url.lower()
-            features['has_casino_in_url'] = int(any(brand in url_lower for brand in self.casino_brands))
-            
-            casino_keywords_count = 0
+            features['self_signed'] = int(ssl_analysis.get('issuer', '') == 'self-signed')
             
             if deep_scan:
                 forms = deep_scan.get('form_analysis', [])
                 features['num_forms'] = len(forms)
                 features['num_password_forms'] = len([f for f in forms if f.get('has_password')])
+                features['num_hidden_inputs'] = sum(f.get('input_types', []).count('hidden') for f in forms)
+                
+                external_forms = [f for f in forms if f.get('external_action')]
+                features['external_form_action'] = len(external_forms)
+                
+                for form in external_forms:
+                    action = form.get('action', '')
+                    for brand_name, brand_data in self.brands.items():
+                        if brand_data['url'] in action:
+                            features['form_action_url_similarity'] = 1
+                            break
                 
                 scripts = deep_scan.get('javascript_analysis', [])
                 features['num_external_scripts'] = len([s for s in scripts if s.get('external')])
-                
-                features['num_external_resources'] = len(deep_scan.get('external_resources', []))
+                features['num_obfuscated_scripts'] = len([s for s in scripts if s.get('has_malicious_patterns')])
                 
                 content_analysis = deep_scan.get('content_analysis', {})
-                features['scam_word_count'] = content_analysis.get('scam_word_count', 0)
-                
-                features['has_brand_impersonation'] = int(deep_scan.get('brand_impersonation') is not None)
-                features['num_suspicious_patterns'] = len(deep_scan.get('suspicious_patterns', []))
-                
                 features['num_iframes'] = content_analysis.get('num_iframes', 0)
                 features['has_meta_refresh'] = int(content_analysis.get('has_meta_refresh', False))
                 features['has_redirect'] = int(deep_scan.get('has_redirect', False))
                 features['num_hidden_elements'] = content_analysis.get('num_hidden_elements', 0)
                 features['num_external_links'] = content_analysis.get('num_external_links', 0)
                 
-                casino_analysis = deep_scan.get('casino_analysis', {})
-                if casino_analysis.get('is_casino'):
-                    casino_keywords_count = len(casino_analysis.get('indicators', []))
-                    
-                    confidence = casino_analysis.get('confidence', 'low')
-                    if confidence == 'high':
-                        features['casino_confidence_score'] = 3
-                    elif confidence == 'medium':
-                        features['casino_confidence_score'] = 2
-                    else:
-                        features['casino_confidence_score'] = 1
-            
-            features['casino_keywords_count'] = casino_keywords_count
+                scam_words = deep_scan.get('suspicious_patterns', [])
+                features['sensitive_keywords_count'] = len(scam_words)
+                
+                if html_content:
+                    features.update(self._analyze_visual_similarity(html_content, url))
+                
+                features.update(self._analyze_behavioral_risks(deep_scan))
             
         except Exception as e:
-            logger.error(f"Error extracting features: {e}")
+            logger.error(f"Error extracting phishing features: {e}")
         
-        feature_values = [features[name] for name in self.structural_features]
-        
-        return np.array(feature_values).reshape(1, -1)
+        return np.array([features[name] for name in self.phishing_features]).reshape(1, -1)
     
-    def extract_text_features(self, html_content: str) -> np.array:
-        """Извлечение текстовых признаков"""
-        if not html_content:
-            return np.zeros((1, 500))  
-        
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html_content, 'html.parser')
-        text = soup.get_text()
+    def _analyze_visual_similarity(self, html: str, url: str) -> dict:
+        """Анализ визуального сходства с известными брендами"""
+        features = {
+            'title_similarity': 0,
+            'logo_present': 0,
+            'logo_similarity': 0,
+            'color_scheme_match': 0,
+            'layout_similarity': 0,
+            'favicon_match': 0,
+            'brand_mentions': 0,
+            'brand_density': 0
+        }
         
         try:
-            text_features = self.text_vectorizer.transform([text])
-            return text_features.toarray()
-        except:
-            return np.zeros((1, 500))
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            title = soup.find('title')
+            if title:
+                title_text = title.string.lower() if title.string else ''
+                
+                for brand_name, brand_data in self.brands.items():
+                    if brand_name in title_text:
+                        features['brand_mentions'] += 1
+                        
+                    similarity = difflib.SequenceMatcher(
+                        None, 
+                        title_text, 
+                        brand_data['title'].lower()
+                    ).ratio()
+                    if similarity > 0.7:
+                        features['title_similarity'] = max(features['title_similarity'], similarity)
+            
+            images = soup.find_all('img')
+            for img in images:
+                alt = img.get('alt', '').lower()
+                src = img.get('src', '')
+                
+                if any(word in alt for word in ['logo', 'лого']):
+                    features['logo_present'] = 1
+                    
+                    for brand_data in self.brands.values():
+                        if brand_data['logo_hash'] in src:
+                            features['logo_similarity'] = 1
+            
+            text = soup.get_text().lower()
+            total_words = len(text.split())
+            brand_words = sum(1 for brand in self.brands.keys() if brand in text)
+            features['brand_density'] = brand_words / max(total_words, 1)
+            
+        except Exception as e:
+            logger.error(f"Visual analysis error: {e}")
+        
+        return features
     
-    def create_sample_dataset(self, num_samples=1000):
-        """Создание синтетического датасета для обучения с учетом казино"""
-        np.random.seed(42)
+    def _analyze_behavioral_risks(self, deep_scan: dict) -> dict:
+        """Анализ поведенческих рисков (для браузерного расширения)"""
+        features = {
+            'data_exfiltration_risk': 0,
+            'keylogger_detected': 0,
+            'clipboard_access': 0,
+            'geolocation_request': 0,
+            'camera_mic_request': 0
+        }
         
-        data = []
-        labels = []
+        try:
+            scripts = deep_scan.get('javascript_analysis', [])
+            
+            for script in scripts:
+                src = script.get('src', '')
+                content = str(script)
+                
+                if 'navigator.sendBeacon' in content or 'XMLHttpRequest' in content:
+                    features['data_exfiltration_risk'] = 1
+                
+                if 'addEventListener' in content and 'keydown' in content:
+                    features['keylogger_detected'] = 1
+                
+                if 'clipboard' in content.lower():
+                    features['clipboard_access'] = 1
+                
+                if 'geolocation' in content.lower():
+                    features['geolocation_request'] = 1
+                
+                if 'getUserMedia' in content or 'enumerateDevices' in content:
+                    features['camera_mic_request'] = 1
+                    
+        except Exception as e:
+            logger.error(f"Behavioral analysis error: {e}")
         
-        for i in range(num_samples):
-            features = {}
-            
-            site_type = np.random.choice(['safe', 'suspicious', 'malicious', 'casino'], p=[0.3, 0.3, 0.2, 0.2])
-            
-            features['casino_keywords_count'] = 0
-            features['has_casino_in_url'] = 0
-            features['casino_confidence_score'] = 0
-            
-            if site_type == 'safe':
-                features['domain_age_days'] = np.random.randint(365, 3650)
-                features['ssl_valid'] = 1
-                features['suspicious_tld'] = 0
-                features['num_suspicious_patterns'] = np.random.poisson(0.5)
-                features['scam_word_count'] = np.random.poisson(2)
-                features['has_brand_impersonation'] = 0
-                features['num_forms'] = np.random.poisson(1)
-                features['num_password_forms'] = 0
-                features['days_to_expiry'] = np.random.randint(100, 500)
-                features['has_ip'] = 0
-                features['num_digits'] = np.random.poisson(2)
-                features['num_external_scripts'] = np.random.poisson(3)
-                features['num_external_resources'] = np.random.poisson(5)
-                features['num_iframes'] = 0
-                features['has_meta_refresh'] = 0
-                features['has_redirect'] = 0
-                features['num_hidden_elements'] = np.random.poisson(1)
-                features['num_external_links'] = np.random.poisson(10)
-                label = 0
-                
-            elif site_type == 'suspicious':
-                features['domain_age_days'] = np.random.randint(30, 180)
-                features['ssl_valid'] = np.random.choice([0, 1], p=[0.4, 0.6])
-                features['suspicious_tld'] = np.random.choice([0, 1], p=[0.6, 0.4])
-                features['num_suspicious_patterns'] = np.random.poisson(3)
-                features['scam_word_count'] = np.random.poisson(8)
-                features['has_brand_impersonation'] = np.random.choice([0, 1], p=[0.7, 0.3])
-                features['num_forms'] = np.random.poisson(2)
-                features['num_password_forms'] = np.random.choice([0, 1], p=[0.5, 0.5])
-                features['days_to_expiry'] = np.random.randint(30, 100)
-                features['has_ip'] = np.random.choice([0, 1], p=[0.9, 0.1])
-                features['num_digits'] = np.random.poisson(4)
-                features['num_external_scripts'] = np.random.poisson(6)
-                features['num_external_resources'] = np.random.poisson(10)
-                features['num_iframes'] = np.random.poisson(1)
-                features['has_meta_refresh'] = np.random.choice([0, 1], p=[0.8, 0.2])
-                features['has_redirect'] = np.random.choice([0, 1], p=[0.7, 0.3])
-                features['num_hidden_elements'] = np.random.poisson(3)
-                features['num_external_links'] = np.random.poisson(20)
-                label = 1
-                
-            elif site_type == 'casino':
-                features['domain_age_days'] = np.random.randint(1, 60)
-                features['ssl_valid'] = np.random.choice([0, 1], p=[0.3, 0.7])
-                features['suspicious_tld'] = np.random.choice([0, 1], p=[0.4, 0.6])
-                features['num_suspicious_patterns'] = np.random.poisson(5)
-                features['scam_word_count'] = np.random.poisson(15)
-                features['has_brand_impersonation'] = np.random.choice([0, 1], p=[0.5, 0.5])
-                features['num_forms'] = np.random.poisson(3)
-                features['num_password_forms'] = np.random.choice([0, 1], p=[0.3, 0.7])
-                features['days_to_expiry'] = np.random.randint(1, 60)
-                features['has_ip'] = np.random.choice([0, 1], p=[0.8, 0.2])
-                features['num_digits'] = np.random.poisson(5)
-                features['num_external_scripts'] = np.random.poisson(8)
-                features['num_external_resources'] = np.random.poisson(12)
-                features['num_iframes'] = np.random.poisson(2)
-                features['has_meta_refresh'] = np.random.choice([0, 1], p=[0.6, 0.4])
-                features['has_redirect'] = np.random.choice([0, 1], p=[0.6, 0.4])
-                features['num_hidden_elements'] = np.random.poisson(4)
-                features['num_external_links'] = np.random.poisson(25)
-                
-                features['casino_keywords_count'] = np.random.randint(3, 15)
-                features['has_casino_in_url'] = np.random.choice([0, 1], p=[0.2, 0.8])
-                features['casino_confidence_score'] = np.random.choice([1, 2, 3], p=[0.2, 0.3, 0.5])
-                label = 1
-                
-            else: 
-                features['domain_age_days'] = np.random.randint(1, 30)
-                features['ssl_valid'] = np.random.choice([0, 1], p=[0.8, 0.2])
-                features['suspicious_tld'] = np.random.choice([0, 1], p=[0.3, 0.7])
-                features['num_suspicious_patterns'] = np.random.poisson(8)
-                features['scam_word_count'] = np.random.poisson(20)
-                features['has_brand_impersonation'] = np.random.choice([0, 1], p=[0.3, 0.7])
-                features['num_forms'] = np.random.poisson(3)
-                features['num_password_forms'] = np.random.choice([0, 1], p=[0.2, 0.8])
-                features['days_to_expiry'] = np.random.randint(1, 30)
-                features['has_ip'] = np.random.choice([0, 1], p=[0.7, 0.3])
-                features['num_digits'] = np.random.poisson(6)
-                features['num_external_scripts'] = np.random.poisson(10)
-                features['num_external_resources'] = np.random.poisson(15)
-                features['num_iframes'] = np.random.poisson(3)
-                features['has_meta_refresh'] = np.random.choice([0, 1], p=[0.5, 0.5])
-                features['has_redirect'] = np.random.choice([0, 1], p=[0.5, 0.5])
-                features['num_hidden_elements'] = np.random.poisson(5)
-                features['num_external_links'] = np.random.poisson(30)
-                features['casino_keywords_count'] = np.random.poisson(1)
-                features['has_casino_in_url'] = np.random.choice([0, 1], p=[0.7, 0.3])
-                features['casino_confidence_score'] = np.random.choice([0, 1], p=[0.7, 0.3])
-                label = 1
-            
-            for feature in self.structural_features:
-                if feature not in features:
-                    if 'num_' in feature or 'count' in feature:
-                        features[feature] = np.random.poisson(1)
-                    elif 'has_' in feature:
-                        features[feature] = np.random.choice([0, 1])
-                    else:
-                        features[feature] = np.random.randn() * 0.5
-            
-            data.append([features[name] for name in self.structural_features])
-            labels.append(label)
-        
-        return np.array(data), np.array(labels)
+        return features
     
-    def train(self, scan_results=None, labels=None, use_synthetic=True):
-        """Обучение модели"""
+    def train_anti_phishing(self, scan_results=None, labels=None, use_synthetic=True):
+        """Обучение усиленной антифишинговой модели"""
+        
         if scan_results and labels:
             X_list = []
             for result in scan_results:
-                features = self.extract_features_from_scan(result)
+                features = self.extract_phishing_features(result)
                 X_list.append(features.flatten())
             X = np.array(X_list)
             y = np.array(labels)
             
         elif use_synthetic:
-            logger.info("Creating enhanced synthetic dataset with casino detection...")
-            X, y = self.create_sample_dataset(3000) 
+            logger.info("Creating enhanced anti-phishing dataset...")
+            X, y = self._create_phishing_dataset(5000)
             
         else:
             raise ValueError("No training data provided")
@@ -385,42 +354,73 @@ class CyberScanAI:
         X_train, X_test, y_train, y_test = train_test_split(
             X_scaled, y, test_size=0.2, random_state=42, stratify=y
         )
-
-        logger.info("Training Random Forest model with casino detection...")
-        self.model = RandomForestClassifier(
-            n_estimators=250,  
-            max_depth=25,
-            min_samples_split=4,
-            min_samples_leaf=2,
+        
+        logger.info("Training ensemble of 3 models...")
+        
+        rf = RandomForestClassifier(
+            n_estimators=300,
+            max_depth=30,
+            min_samples_split=3,
+            min_samples_leaf=1,
             random_state=42,
             class_weight='balanced',
             n_jobs=-1
         )
         
-        self.model.fit(X_train, y_train)
+        gb = GradientBoostingClassifier(
+            n_estimators=200,
+            max_depth=15,
+            learning_rate=0.05,
+            random_state=42
+        )
         
-        y_pred = self.model.predict(X_test)
+        nn = MLPClassifier(
+            hidden_layer_sizes=(100, 50, 25),
+            activation='relu',
+            solver='adam',
+            alpha=0.001,
+            batch_size=32,
+            learning_rate='adaptive',
+            max_iter=500,
+            random_state=42
+        )
         
-        accuracy = accuracy_score(y_test, y_pred)
-        precision = precision_score(y_test, y_pred)
-        recall = recall_score(y_test, y_pred)
-        f1 = f1_score(y_test, y_pred)
+        rf.fit(X_train, y_train)
+        gb.fit(X_train, y_train)
+        nn.fit(X_train, y_train)
         
-        logger.info(f"Model trained successfully!")
+        self.model = {
+            'random_forest': rf,
+            'gradient_boosting': gb,
+            'neural_network': nn
+        }
+        
+
+        rf_pred = rf.predict(X_test)
+        gb_pred = gb.predict(X_test)
+        nn_pred = nn.predict(X_test)
+        
+        ensemble_pred = np.round((rf_pred + gb_pred + nn_pred) / 3).astype(int)
+        
+        accuracy = accuracy_score(y_test, ensemble_pred)
+        precision = precision_score(y_test, ensemble_pred)
+        recall = recall_score(y_test, ensemble_pred)
+        f1 = f1_score(y_test, ensemble_pred)
+        
+        logger.info(f"✅ Ensemble model trained!")
         logger.info(f"Accuracy: {accuracy:.3f}")
         logger.info(f"Precision: {precision:.3f}")
         logger.info(f"Recall: {recall:.3f}")
         logger.info(f"F1 Score: {f1:.3f}")
         
         feature_importance = pd.DataFrame({
-            'feature': self.structural_features,
-            'importance': self.model.feature_importances_
+            'feature': self.phishing_features,
+            'importance': rf.feature_importances_
         }).sort_values('importance', ascending=False)
         
-        logger.info("\nTop 15 most important features:")
+        logger.info("\n🔥 Top 15 anti-phishing features:")
         for idx, row in feature_importance.head(15).iterrows():
-            importance_pct = row['importance'] * 100
-            logger.info(f"  {row['feature']}: {importance_pct:.1f}%")
+            logger.info(f"  {row['feature']}: {row['importance']:.3f}")
         
         return {
             'accuracy': accuracy,
@@ -430,273 +430,178 @@ class CyberScanAI:
             'feature_importance': feature_importance.head(15).to_dict('records')
         }
     
-    def predict(self, scan_result: dict) -> dict:
-        """Предсказание для одного результата сканирования"""
+    def predict_phishing(self, scan_result: dict, html_content: str = None) -> dict:
+        """Предсказание с расширенным анализом"""
+        
         if self.model is None:
             logger.warning("Model not trained, loading default...")
             self.load_model()
-            
-            if self.model is None:
-                return {
-                    'is_malicious': False,
-                    'confidence': 0,
-                    'probability_malicious': 0.5,
-                    'probability_safe': 0.5,
-                    'risk_level': 'Unknown',
-                    'important_factors': [],
-                    'warning': 'Model not trained'
-                }
         
         try:
-            features = self.extract_features_from_scan(scan_result)
+            features = self.extract_phishing_features(scan_result, html_content)
             features_scaled = self.scaler.transform(features)
+            rf_prob = self.model['random_forest'].predict_proba(features_scaled)[0]
+            gb_prob = self.model['gradient_boosting'].predict_proba(features_scaled)[0]
+            nn_prob = self.model['neural_network'].predict_proba(features_scaled)[0]
+            avg_prob = (rf_prob + gb_prob + nn_prob) / 3
+            rf_pred = self.model['random_forest'].predict(features_scaled)[0]
+            gb_pred = self.model['gradient_boosting'].predict(features_scaled)[0]
+            nn_pred = self.model['neural_network'].predict(features_scaled)[0]
+            votes = rf_pred + gb_pred + nn_pred
+            is_phishing = votes >= 2
             
-            proba = self.model.predict_proba(features_scaled)[0]
-            prediction = self.model.predict(features_scaled)[0]
-            
-            if len(proba) > 1:
-                prob_malicious = float(proba[1])
-                prob_safe = float(proba[0])
-            else:
-                prob_malicious = float(proba[0])
-                prob_safe = 1 - prob_malicious
-            
-            confidence = float(max(proba))
-            
-            important_factors = self._get_important_factors(scan_result)
+            confidence = float(max(avg_prob))
+            risk_factors = self._analyze_risk_factors(scan_result, html_content)
             
             return {
-                'is_malicious': bool(prediction),
+                'is_phishing': bool(is_phishing),
                 'confidence': confidence,
-                'probability_malicious': prob_malicious,
-                'probability_safe': prob_safe,
-                'risk_level': self._compute_risk_level(scan_result, prob_malicious),
-                'important_factors': important_factors,
+                'probability': float(avg_prob[1]) if len(avg_prob) > 1 else float(avg_prob[0]),
+                'risk_factors': risk_factors,
+                'model_votes': {
+                    'random_forest': bool(rf_pred),
+                    'gradient_boosting': bool(gb_pred),
+                    'neural_network': bool(nn_pred)
+                },
+                'phishing_score': int(confidence * 100),
                 'timestamp': datetime.now().isoformat()
             }
             
         except Exception as e:
             logger.error(f"Prediction error: {e}")
             return {
-                'is_malicious': False,
+                'is_phishing': False,
                 'confidence': 0,
-                'probability_malicious': 0.5,
-                'probability_safe': 0.5,
-                'risk_level': 'Error',
-                'important_factors': [],
                 'error': str(e)
             }
     
-    def _compute_risk_level(self, scan_result, prob_malicious):
-        """Вычисление уровня риска"""
-        factors = self._get_important_factors(scan_result)
-        
-        weight_map = {'low': 0.1, 'medium': 0.2, 'high': 0.3, 'critical': 0.4}
-        total_weight = sum(weight_map.get(f.get('weight', 'low'), 0.1) for f in factors)
-        
-        deep_scan = scan_result.get('deep_scan', {})
-        casino_analysis = deep_scan.get('casino_analysis', {})
-        if casino_analysis.get('is_casino'):
-            casino_conf = casino_analysis.get('confidence', 'low')
-            if casino_conf == 'high':
-                total_weight += 0.3
-            elif casino_conf == 'medium':
-                total_weight += 0.2
-            else:
-                total_weight += 0.1
-        
-        score = min(prob_malicious + total_weight, 1.0)
-        
-        if score < 0.2:
-            return "Very Low"
-        elif score < 0.4:
-            return "Low"
-        elif score < 0.6:
-            return "Medium"
-        elif score < 0.8:
-            return "High"
-        else:
-            return "Critical"
-
-    def _get_important_factors(self, scan_result: dict) -> list:
-        """Получение важных факторов для объяснения"""
+    def _analyze_risk_factors(self, scan_result: dict, html_content: str) -> list:
+        """Детальный анализ факторов риска"""
         factors = []
         
         try:
             level1 = scan_result.get('level1', {})
             deep_scan = scan_result.get('deep_scan', {})
+            url = scan_result.get('url', '')
             
-            # SSL проверка
             ssl = level1.get('ssl_analysis', {})
             if not ssl.get('valid'):
                 factors.append({
                     'factor': 'no_ssl',
-                    'description': 'Отсутствует валидный SSL сертификат',
-                    'weight': 'high'
+                    'description': 'Нет валидного SSL сертификата',
+                    'risk': 'high'
                 })
             elif ssl.get('days_until_expiry', 999) < 7:
                 factors.append({
                     'factor': 'ssl_expiring',
                     'description': 'SSL сертификат скоро истекает',
-                    'weight': 'medium'
+                    'risk': 'medium'
                 })
             
-            # WHOIS анализ
             whois = level1.get('whois_analysis', {})
             domain_age = whois.get('domain_age_days')
-            if domain_age:
-                if domain_age < 7:
-                    factors.append({
-                        'factor': 'very_young_domain',
-                        'description': f'Домен создан {domain_age} дней назад (очень свежий)',
-                        'weight': 'critical'
-                    })
-                elif domain_age < 30:
-                    factors.append({
-                        'factor': 'young_domain',
-                        'description': f'Домен создан {domain_age} дней назад',
-                        'weight': 'high'
-                    })
-                elif domain_age < 90:
-                    factors.append({
-                        'factor': 'relatively_new_domain',
-                        'description': f'Домену меньше 3 месяцев ({domain_age} дней)',
-                        'weight': 'medium'
-                    })
-            
-            # Приватный WHOIS
-            if whois.get('is_private'):
+            if domain_age and domain_age < 7:
                 factors.append({
-                    'factor': 'private_whois',
-                    'description': 'Приватная регистрация WHOIS',
-                    'weight': 'low'
+                    'factor': 'very_young_domain',
+                    'description': f'Домен создан {domain_age} дней назад',
+                    'risk': 'critical'
+                })
+            elif domain_age and domain_age < 30:
+                factors.append({
+                    'factor': 'young_domain',
+                    'description': f'Домен создан {domain_age} дней назад',
+                    'risk': 'high'
                 })
             
-            # DNS анализ
-            dns = level1.get('dns_analysis', {})
-            if not dns.get('has_dns'):
-                factors.append({
-                    'factor': 'no_dns',
-                    'description': 'Домен не резолвится',
-                    'weight': 'critical'
-                })
-            elif not dns.get('has_mx'):
-                factors.append({
-                    'factor': 'no_mx',
-                    'description': 'Нет MX записей',
-                    'weight': 'medium'
-                })
-            
-            # URL анализ
-            url_analysis = level1.get('url_analysis', {})
-            if url_analysis.get('has_ip'):
-                factors.append({
-                    'factor': 'ip_in_url',
-                    'description': 'URL содержит IP-адрес вместо домена',
-                    'weight': 'high'
-                })
-            if url_analysis.get('suspicious_tld'):
+            if '.xyz' in url or '.top' in url or '.tk' in url:
                 factors.append({
                     'factor': 'suspicious_tld',
                     'description': 'Подозрительная доменная зона',
-                    'weight': 'high'
-                })
-            if url_analysis.get('url_length', 0) > 100:
-                factors.append({
-                    'factor': 'long_url',
-                    'description': 'Необычно длинный URL',
-                    'weight': 'medium'
+                    'risk': 'medium'
                 })
             
-            # Глубокий анализ
-            if deep_scan:
-                # Имитация бренда
-                if deep_scan.get('brand_impersonation'):
+            forms = deep_scan.get('form_analysis', [])
+            password_forms = [f for f in forms if f.get('has_password')]
+            
+            for form in password_forms:
+                if form.get('external_action'):
                     factors.append({
-                        'factor': 'brand_impersonation',
-                        'description': f"Имитация бренда: {deep_scan['brand_impersonation']}",
-                        'weight': 'critical'
+                        'factor': 'external_password_form',
+                        'description': f"Пароль уходит на {form.get('action')}",
+                        'risk': 'critical'
                     })
-                
-                # Формы
-                forms = deep_scan.get('form_analysis', [])
-                password_forms = [f for f in forms if f.get('has_password')]
-                if password_forms:
-                    external_forms = [f for f in password_forms if f.get('external_action')]
-                    if external_forms:
-                        factors.append({
-                            'factor': 'external_password_forms',
-                            'description': f"Формы с паролями отправляются на внешние домены",
-                            'weight': 'critical'
-                        })
-                    else:
-                        factors.append({
-                            'factor': 'password_forms',
-                            'description': f"Обнаружено {len(password_forms)} форм с паролями",
-                            'weight': 'high'
-                        })
-                
-
-                suspicious = deep_scan.get('suspicious_patterns', [])
-                if suspicious:
-                    factors.append({
-                        'factor': 'suspicious_patterns',
-                        'description': f"Найдено {len(suspicious)} подозрительных паттернов",
-                        'weight': 'medium'
-                    })
-                
-                casino_analysis = deep_scan.get('casino_analysis', {})
-                if casino_analysis.get('is_casino'):
-                    casino_conf = casino_analysis.get('confidence', 'low')
-                    indicators = casino_analysis.get('indicators', [])
-                    
-                    if casino_conf == 'high':
-                        weight = 'critical'
-                        desc = f"🎰 ОНЛАЙН-КАЗИНО (высокая уверенность)"
-                    elif casino_conf == 'medium':
-                        weight = 'high'
-                        desc = f"🎰 Подозрение на онлайн-казино"
-                    else:
-                        weight = 'medium'
-                        desc = f"🎰 Возможные признаки казино"
-                    
-                    if indicators:
-                        desc += f": {', '.join(indicators[:3])}"
-                    
-                    factors.append({
-                        'factor': 'casino_detected',
-                        'description': desc,
-                        'weight': weight
-                    })
-                
-                url = scan_result.get('url', '').lower()
-                for brand in self.casino_brands:
-                    if brand in url and brand not in [f.get('description', '') for f in factors]:
-                        factors.append({
-                            'factor': 'casino_in_url',
-                            'description': f"URL содержит признак казино: '{brand}'",
-                            'weight': 'medium'
-                        })
-                        break
-                    
+            
+            if html_content:
+                soup = BeautifulSoup(html_content, 'html.parser')
+                title = soup.find('title')
+                if title:
+                    title_text = title.string.lower() if title.string else ''
+                    for brand in ['kaspi', 'paypal', 'halyk']:
+                        if brand in title_text and brand not in url:
+                            factors.append({
+                                'factor': 'brand_impersonation',
+                                'description': f'Имитация бренда {brand}',
+                                'risk': 'critical'
+                            })
+            
         except Exception as e:
-            logger.error(f"Error getting important factors: {e}")
-        
-        if not factors:
-            factors.append({
-                'factor': 'normal_site',
-                'description': 'Сайт не содержит явных признаков угрозы',
-                'weight': 'low'
-            })
+            logger.error(f"Risk analysis error: {e}")
         
         return factors
     
-    def predict_batch(self, scan_results: list) -> list:
-        """Пакетное предсказание"""
-        predictions = []
-        for result in scan_results:
-            predictions.append(self.predict(result))
-        return predictions
+    def _create_phishing_dataset(self, num_samples=5000):
+        """Создание расширенного датасета для фишинга"""
+        np.random.seed(42)
+        
+        data = []
+        labels = []
+        
+        for i in range(num_samples):
+            features = {}
+            
+            is_phishing = np.random.choice([0, 1], p=[0.5, 0.5])
+            
+            if is_phishing:
+                features['domain_age_days'] = np.random.randint(1, 30)
+                features['ssl_valid'] = np.random.choice([0, 1], p=[0.7, 0.3])
+                features['suspicious_tld'] = np.random.choice([0, 1], p=[0.2, 0.8])
+                features['num_suspicious_patterns'] = np.random.poisson(8)
+                features['num_password_forms'] = np.random.choice([0, 1, 2], p=[0.1, 0.6, 0.3])
+                features['external_form_action'] = np.random.choice([0, 1], p=[0.1, 0.9])
+                features['has_ip'] = np.random.choice([0, 1], p=[0.6, 0.4])
+                features['num_digits'] = np.random.poisson(6)
+                features['entropy'] = np.random.uniform(3.5, 5.0)
+                features['title_similarity'] = np.random.uniform(0.7, 0.95)
+                features['brand_mentions'] = np.random.randint(1, 5)
+                label = 1
+                
+            else:
+                features['domain_age_days'] = np.random.randint(365, 3650)
+                features['ssl_valid'] = np.random.choice([1], p=[1.0])
+                features['suspicious_tld'] = 0
+                features['num_suspicious_patterns'] = np.random.poisson(0.5)
+                features['num_password_forms'] = np.random.choice([0, 1], p=[0.8, 0.2])
+                features['external_form_action'] = 0
+                features['has_ip'] = 0
+                features['num_digits'] = np.random.poisson(2)
+                features['entropy'] = np.random.uniform(2.0, 3.2)
+                features['title_similarity'] = np.random.uniform(0.1, 0.3)
+                features['brand_mentions'] = np.random.randint(0, 2)
+                label = 0
+            
+            for feature in self.phishing_features:
+                if feature not in features:
+                    if 'num_' in feature or 'count' in feature:
+                        features[feature] = np.random.poisson(1)
+                    elif 'has_' in feature:
+                        features[feature] = np.random.choice([0, 1])
+                    else:
+                        features[feature] = np.random.randn() * 0.5
+            
+            data.append([features[name] for name in self.phishing_features])
+            labels.append(label)
+        
+        return np.array(data), np.array(labels)
     
     def save_model(self, path=None):
         """Сохранение модели"""
@@ -707,15 +612,13 @@ class CyberScanAI:
             'model': self.model,
             'scaler': self.scaler,
             'text_vectorizer': self.text_vectorizer,
-            'structural_features': self.structural_features,
-            'feature_weights': self.feature_weights,
-            'casino_keywords': self.casino_keywords,
-            'casino_brands': self.casino_brands,
+            'phishing_features': self.phishing_features,
+            'brands': self.brands,
             'timestamp': datetime.now().isoformat()
         }
         
         joblib.dump(model_data, path)
-        logger.info(f"Model saved to {path}")
+        logger.info(f"Anti-phishing model saved to {path}")
     
     def load_model(self, path=None):
         """Загрузка модели"""
@@ -728,11 +631,9 @@ class CyberScanAI:
                 self.model = model_data['model']
                 self.scaler = model_data['scaler']
                 self.text_vectorizer = model_data['text_vectorizer']
-                self.structural_features = model_data.get('structural_features', self.structural_features)
-                self.feature_weights = model_data.get('feature_weights', self.feature_weights)
-                self.casino_keywords = model_data.get('casino_keywords', self.casino_keywords)
-                self.casino_brands = model_data.get('casino_brands', self.casino_brands)
-                logger.info(f"Model loaded from {path}")
+                self.phishing_features = model_data.get('phishing_features', self.phishing_features)
+                self.brands = model_data.get('brands', self.brands)
+                logger.info(f"Anti-phishing model loaded from {path}")
                 return True
             except Exception as e:
                 logger.error(f"Error loading model: {e}")
@@ -740,139 +641,55 @@ class CyberScanAI:
         else:
             logger.warning(f"Model file {path} not found")
             return False
-    
-    def get_model_info(self) -> dict:
-        """Информация о модели"""
-        info = {
-            'model_type': type(self.model).__name__ if self.model else 'Not trained',
-            'num_features': len(self.structural_features),
-            'features': self.structural_features[:10],
-            'feature_weights': self.feature_weights,
-            'casino_detection_enabled': True,
-            'casino_keywords_count': len(self.casino_keywords)
-        }
+
+class CyberScanAI:
+    """
+    Класс-обертка для совместимости со старым кодом
+    """
+    def __init__(self, model_path='cyberscan_model.pkl'):
+        self.model_path = model_path
+        self.model = None
+        self.scaler = None
+        self.structural_features = [
+            'url_length', 'num_dots', 'num_hyphens', 'num_digits', 'has_ip',
+            'subdomain_count', 'suspicious_tld', 'path_length', 'num_query_params',
+            'special_chars_count', 'has_dns', 'has_mx', 'num_ip_addresses',
+            'num_ns_servers', 'domain_age_days', 'is_private_whois', 'days_to_expiry',
+            'ssl_valid', 'ssl_days_until_expiry', 'num_forms', 'num_password_forms',
+            'num_external_scripts', 'num_external_resources', 'scam_word_count',
+            'has_brand_impersonation', 'num_suspicious_patterns', 'num_iframes',
+            'has_meta_refresh', 'has_redirect', 'num_hidden_elements', 'num_external_links',
+            'casino_keywords_count', 'has_casino_in_url', 'casino_confidence_score'
+        ]
         
-        if self.model:
-            info['n_classes'] = len(self.model.classes_)
-            info['n_estimators'] = self.model.n_estimators if hasattr(self.model, 'n_estimators') else None
+    def load_model(self):
+        """Загрузка модели"""
+        result = anti_phishing_ai.load_model()
+        if result:
+            logger.info("✅ CyberScanAI model loaded via AntiPhishingAI")
+        else:
+            logger.info("🔄 Creating synthetic model for CyberScanAI...")
+            anti_phishing_ai.train_anti_phishing(use_synthetic=True)
+            anti_phishing_ai.save_model()
+            logger.info("✅ Synthetic CyberScanAI model created")
+        return True
         
-        return info
+    def predict(self, scan_result: dict) -> dict:
+        """Предсказание через AntiPhishingAI"""
+        html_content = None
+        if 'deep_scan' in scan_result:
+            html_content = scan_result['deep_scan'].get('html_content')
+            
+        return anti_phishing_ai.predict_phishing(scan_result, html_content)
+    
+    def train(self, features=None, labels=None):
+        """Обучение модели (используй train_anti_phishing)"""
+        logger.info("Training via CyberScanAI - use train_anti_phishing instead")
+        return {'accuracy': 0, 'precision': 0, 'recall': 0, 'f1': 0}
+    
+    def save_model(self, path=None):
+        """Сохранение модели"""
+        anti_phishing_ai.save_model(path or self.model_path)
 
-ai_model = CyberScanAI()
-
-def analyze(url: str) -> None:
-    """Анализ одного URL (для тестирования)"""
-    from collector import scan_url_async
-    import asyncio
-    
-    scan_result = asyncio.run(scan_url_async(url))
-    prediction = ai_model.predict(scan_result)
-    print(json.dumps(prediction, indent=2, ensure_ascii=False))
-
-def train_from_database(db_path='cyberscan.db'):
-    """Обучение из базы данных"""
-    import sqlite3
-    
-    conn = sqlite3.connect(db_path)
-    c = conn.cursor()
-    
-    c.execute("SELECT result, is_malicious FROM scans WHERE is_malicious IS NOT NULL")
-    rows = c.fetchall()
-    conn.close()
-    
-    if len(rows) < 10:
-        logger.warning(f"Not enough data in database ({len(rows)} samples), using synthetic data")
-        return ai_model.train(use_synthetic=True)
-    
-    scan_results = []
-    labels = []
-    
-    for result_json, label in rows:
-        try:
-            result = json.loads(result_json)
-            scan_results.append(result)
-            labels.append(label)
-        except:
-            continue
-    
-    logger.info(f"Training on {len(scan_results)} samples from database")
-    return ai_model.train(scan_results, labels)
-
-if __name__ == "__main__":
-    print("=" * 60)
-    print("CyberScan AI Model with Casino Detection")
-    print("=" * 60)
-    
-    model = CyberScanAI()
-    
-    print("\n1. Training on enhanced synthetic data with casino detection...")
-    metrics = model.train(use_synthetic=True)
-    
-    print("\n2. Saving model...")
-    model.save_model()
-    
-    print("\n3. Testing prediction on safe site...")
-    test_result_safe = {
-        'url': 'https://google.com',
-        'level1': {
-            'ssl_analysis': {'valid': True, 'days_until_expiry': 30},
-            'whois_analysis': {'domain_age_days': 8500, 'expiration_date': (datetime.now().replace(year=datetime.now().year + 1)).isoformat()},
-            'url_analysis': {'suspicious_tld': False, 'has_ip': False, 'url_length': 22},
-            'dns_analysis': {'has_dns': True, 'has_mx': True, 'ip_addresses': ['1.1.1.1']}
-        },
-        'deep_scan': {
-            'form_analysis': [],
-            'suspicious_patterns': [],
-            'brand_impersonation': None,
-            'has_redirect': False,
-            'casino_analysis': {'is_casino': False},
-            'content_analysis': {
-                'scam_word_count': 0,
-                'num_iframes': 0,
-                'num_external_links': 5,
-                'num_hidden_elements': 0,
-                'has_meta_refresh': False
-            }
-        }
-    }
-    
-    prediction_safe = model.predict(test_result_safe)
-    print(f"Safe site prediction: {json.dumps(prediction_safe, indent=2, ensure_ascii=False)}")
-    
-    print("\n4. Testing prediction on casino site...")
-    test_result_casino = {
-        'url': 'http://vulkan-casino-777.com',
-        'level1': {
-            'ssl_analysis': {'valid': False, 'days_until_expiry': -1},
-            'whois_analysis': {'domain_age_days': 5, 'is_private': True},
-            'url_analysis': {'suspicious_tld': True, 'has_ip': False, 'url_length': 35},
-            'dns_analysis': {'has_dns': True, 'has_mx': False, 'ip_addresses': []}
-        },
-        'deep_scan': {
-            'form_analysis': [{'has_password': True, 'external_action': True}],
-            'suspicious_patterns': ['Подозрительное слово: casino', 'Подозрительное слово: бонус'],
-            'brand_impersonation': None,
-            'has_redirect': True,
-            'casino_analysis': {
-                'is_casino': True, 
-                'confidence': 'high', 
-                'indicators': ['vulkan', 'казино', 'бонус', 'слоты', 'джекпот']
-            },
-            'content_analysis': {
-                'scam_word_count': 25,
-                'num_iframes': 3,
-                'num_external_links': 30,
-                'num_hidden_elements': 5,
-                'has_meta_refresh': True
-            }
-        }
-    }
-    
-    prediction_casino = model.predict(test_result_casino)
-    print(f"Casino site prediction: {json.dumps(prediction_casino, indent=2, ensure_ascii=False)}")
-
-    print("\n5. Model info:")
-    info = model.get_model_info()
-    print(json.dumps(info, indent=2, default=str))
-    
-    print("\n✅ Enhanced AI Model with Casino Detection ready!") 
+anti_phishing_ai = AntiPhishingAI()
+cyberscan_ai = CyberScanAI()
