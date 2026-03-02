@@ -6,7 +6,7 @@ import whois
 from bs4 import BeautifulSoup
 import tldextract
 from datetime import datetime
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, urldefrag
 import re
 import json
 import dns.resolver
@@ -19,6 +19,8 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import functools
 import difflib
+from collections import Counter
+import math
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -37,17 +39,30 @@ class CyberScanCollector:
         result = {
             "is_login_page": False,
             "brand_detected": None,
-            "suspicious_login": False
+            "suspicious_login": False,
+            "login_forms": []
         }
         text = soup.get_text().lower()
 
         login_keywords = [
             "login", "sign in", "account", "verify",
-            "security check", "password", "authentication"
+            "security check", "password", "authentication",
+            "войти", "вход", "аккаунт", "пароль", "подтвердить"
         ]
 
         if any(k in text for k in login_keywords):
             result["is_login_page"] = True
+
+        forms = soup.find_all('form')
+        for form in forms:
+            form_text = form.get_text().lower()
+            if any(k in form_text for k in ['password', 'пароль', 'login']):
+                form_data = {
+                    'action': form.get('action', ''),
+                    'method': form.get('method', 'get'),
+                    'has_password': bool(form.find('input', {'type': 'password'}))
+                }
+                result["login_forms"].append(form_data)
 
         for brand in self.brand_keywords:
             if brand in text:
@@ -63,7 +78,9 @@ class CyberScanCollector:
         result = {
             "is_casino": False,
             "confidence": "low",
-            "indicators": []
+            "indicators": [],
+            "gambling_terms": [],
+            "bonus_offers": []
         }
         
         text = soup.get_text().lower()
@@ -77,13 +94,36 @@ class CyberScanCollector:
             'фриспины', 'free spins', 'джекпот', 'jackpot'
         ]
         
+        gambling_terms = [
+            'ставка', 'bet', 'выигрыш', 'win', 'проигрыш', 'lose',
+            'кэф', 'odds', 'тотализатор', 'lottery', 'лотерея'
+        ]
+        
+        bonus_terms = [
+            'бонус', 'bonus', 'промокод', 'promocode', 'халява', 'free',
+            'подарок', 'gift', 'приветственный', 'welcome'
+        ]
+        
         found_keywords = []
+        found_gambling = []
+        found_bonus = []
+        
         for keyword in casino_keywords:
             if keyword in text or keyword in html:
                 found_keywords.append(keyword)
+                
+        for term in gambling_terms:
+            if term in text:
+                found_gambling.append(term)
+                
+        for term in bonus_terms:
+            if term in text:
+                found_bonus.append(term)
 
         if found_keywords:
             result["indicators"] = found_keywords[:5]
+            result["gambling_terms"] = found_gambling[:5]
+            result["bonus_offers"] = found_bonus[:5]
             
             if len(found_keywords) >= 5:
                 result["confidence"] = "high"
@@ -96,13 +136,216 @@ class CyberScanCollector:
                 result["is_casino"] = True
 
         url_lower = url.lower()
-        url_indicators = ['casino', 'казино', 'vulkan', '1x', 'pinu']
+        url_indicators = ['casino', 'казино', 'vulkan', '1x', 'pinu', 'bet', 'slot']
         for ind in url_indicators:
             if ind in url_lower:
                 result["indicators"].append(f"URL содержит '{ind}'")
                 result["is_casino"] = True
                 if result["confidence"] == "low":
                     result["confidence"] = "medium"
+        
+        return result
+
+    async def _detect_crypto_scam(self, soup, url):
+        """Определение крипто-мошенничества"""
+        result = {
+            "is_crypto_scam": False,
+            "confidence": "low",
+            "indicators": [],
+            "crypto_terms": [],
+            "investment_claims": []
+        }
+        
+        text = soup.get_text().lower()
+        
+        crypto_keywords = [
+            'bitcoin', 'btc', 'ethereum', 'eth', 'crypto', 'крипта',
+            'blockchain', 'blockchain', 'token', 'ico', 'airdrop',
+            'майнинг', 'mining', 'пул', 'pool', 'ферма', 'farm'
+        ]
+        
+        scam_phrases = [
+            'double your bitcoin', 'удвоим биткоин', 'guaranteed profit',
+            'гарантированная прибыль', 'passive income', 'пассивный доход',
+            'investment opportunity', 'инвестиционная возможность',
+            'limited offer', 'ограниченное предложение', 'join now',
+            'присоединяйся', 'early bird', 'ранние пташки'
+        ]
+        
+        found_crypto = []
+        found_scam = []
+        
+        for word in crypto_keywords:
+            if word in text:
+                found_crypto.append(word)
+                
+        for phrase in scam_phrases:
+            if phrase in text:
+                found_scam.append(phrase)
+        
+        if found_crypto:
+            result["crypto_terms"] = found_crypto[:5]
+            
+        if found_scam:
+            result["investment_claims"] = found_scam[:5]
+            
+        if len(found_crypto) >= 3 and len(found_scam) >= 2:
+            result["is_crypto_scam"] = True
+            result["confidence"] = "high"
+        elif len(found_crypto) >= 2 and len(found_scam) >= 1:
+            result["is_crypto_scam"] = True
+            result["confidence"] = "medium"
+        elif len(found_crypto) >= 3:
+            result["is_crypto_scam"] = True
+            result["confidence"] = "low"
+            
+        return result
+
+    async def _analyze_meta_tags(self, soup, url):
+        """Анализ мета-тегов страницы"""
+        result = {
+            'title': None,
+            'description': None,
+            'keywords': None,
+            'author': None,
+            'viewport': None,
+            'robots': None,
+            'canonical': None,
+            'og_tags': {},
+            'twitter_tags': {}
+        }
+        
+        title = soup.find('title')
+        if title:
+            result['title'] = title.string.strip() if title.string else None
+            
+        meta_desc = soup.find('meta', attrs={'name': 'description'})
+        if meta_desc:
+            result['description'] = meta_desc.get('content', '')
+            
+        meta_keywords = soup.find('meta', attrs={'name': 'keywords'})
+        if meta_keywords:
+            result['keywords'] = meta_keywords.get('content', '')
+            
+        for og_tag in soup.find_all('meta', property=re.compile(r'^og:')):
+            result['og_tags'][og_tag.get('property')] = og_tag.get('content', '')
+            
+        for twitter_tag in soup.find_all('meta', attrs={'name': re.compile(r'^twitter:')}):
+            result['twitter_tags'][twitter_tag.get('name')] = twitter_tag.get('content', '')
+            
+        return result
+
+    async def _analyze_links(self, soup, base_url):
+        """Детальный анализ всех ссылок на странице"""
+        result = {
+            'internal_links': [],
+            'external_links': [],
+            'broken_links': [],
+            'mailto_links': [],
+            'tel_links': [],
+            'javascript_links': [],
+            'total_links': 0,
+            'unique_domains': set()
+        }
+        
+        base_domain = tldextract.extract(base_url).domain
+        
+        for link in soup.find_all('a', href=True):
+            href = link.get('href', '')
+            result['total_links'] += 1
+            
+            if href.startswith('mailto:'):
+                result['mailto_links'].append(href)
+            elif href.startswith('tel:'):
+                result['tel_links'].append(href)
+            elif href.startswith('javascript:'):
+                result['javascript_links'].append(href)
+            else:
+                full_url = urljoin(base_url, href)
+                domain = tldextract.extract(full_url).domain
+                result['unique_domains'].add(domain)
+                
+                if domain == base_domain:
+                    result['internal_links'].append(full_url)
+                else:
+                    result['external_links'].append(full_url)
+                    
+        result['unique_domains'] = list(result['unique_domains'])
+        return result
+
+    async def _analyze_page_structure(self, soup):
+        """Анализ HTML структуры страницы"""
+        result = {
+            'has_header': False,
+            'has_footer': False,
+            'has_navigation': False,
+            'has_sidebar': False,
+            'has_main_content': False,
+            'div_count': 0,
+            'section_count': 0,
+            'article_count': 0,
+            'header_count': 0,
+            'footer_count': 0,
+            'nav_count': 0,
+            'aside_count': 0,
+            'main_count': 0,
+            'table_count': 0,
+            'list_count': 0,
+            'heading_distribution': {}
+        }
+        
+        result['has_header'] = bool(soup.find('header'))
+        result['has_footer'] = bool(soup.find('footer'))
+        result['has_navigation'] = bool(soup.find('nav'))
+        result['has_sidebar'] = bool(soup.find('aside'))
+        result['has_main_content'] = bool(soup.find('main'))
+        
+        result['div_count'] = len(soup.find_all('div'))
+        result['section_count'] = len(soup.find_all('section'))
+        result['article_count'] = len(soup.find_all('article'))
+        result['header_count'] = len(soup.find_all('header'))
+        result['footer_count'] = len(soup.find_all('footer'))
+        result['nav_count'] = len(soup.find_all('nav'))
+        result['aside_count'] = len(soup.find_all('aside'))
+        result['main_count'] = len(soup.find_all('main'))
+        result['table_count'] = len(soup.find_all('table'))
+        result['list_count'] = len(soup.find_all(['ul', 'ol']))
+        
+        for i in range(1, 7):
+            tag = f'h{i}'
+            result['heading_distribution'][tag] = len(soup.find_all(tag))
+            
+        return result
+
+    async def _detect_hidden_content(self, soup):
+        """Поиск скрытого контента (для фишинга)"""
+        result = {
+            'hidden_elements': [],
+            'display_none': [],
+            'visibility_hidden': [],
+            'opacity_zero': [],
+            'position_absolute_offscreen': [],
+            'hidden_inputs': []
+        }
+        
+        for element in soup.find_all(style=re.compile(r'display:\s*none')):
+            result['display_none'].append(str(element.name))
+            
+        for element in soup.find_all(style=re.compile(r'visibility:\s*hidden')):
+            result['visibility_hidden'].append(str(element.name))
+            
+        for element in soup.find_all(style=re.compile(r'opacity:\s*0')):
+            result['opacity_zero'].append(str(element.name))
+            
+        for inp in soup.find_all('input', {'type': 'hidden'}):
+            result['hidden_inputs'].append({
+                'name': inp.get('name', ''),
+                'value': inp.get('value', '')[:50] 
+            })
+            
+        result['hidden_elements'] = (len(result['display_none']) + 
+                                    len(result['visibility_hidden']) + 
+                                    len(result['opacity_zero']))
         
         return result
 
@@ -127,12 +370,14 @@ class CyberScanCollector:
             'paypal', 'apple', 'amazon', 'microsoft', 'google', 'netflix',
             'facebook', 'instagram', 'twitter', 'linkedin', 'whatsapp',
             'telegram', 'binance', 'coinbase', 'blockchain', 'bank of america',
-            'wells fargo', 'chase', 'citibank', 'hsbc', 'barclays'
+            'wells fargo', 'chase', 'citibank', 'hsbc', 'barclays',
+            'kaspi', 'halyk', 'sberbank', 'alfabank'
         ]
         
         self.suspicious_tlds = [
             '.tk', '.ml', '.ga', '.cf', '.xyz', '.top', '.work', '.date',
-            '.men', '.loan', '.download', '.review', '.stream', '.trade'
+            '.men', '.loan', '.download', '.review', '.stream', '.trade',
+            '.bid', '.win', '.club', '.online', '.site', '.website'
         ]
         
         self.malicious_patterns = [
@@ -142,7 +387,8 @@ class CyberScanCollector:
             r'<iframe[^>]*src=["\']https?:\/\/[^"\']*\.(ru|cn|tk)',
             r'atob\(["\'][A-Za-z0-9+/=]+["\']\)',
             r'String\.fromCharCode\(.*?\)',
-            r'\\x[0-9a-f]{2}'
+            r'\\x[0-9a-f]{2}',
+            r'\\u[0-9a-f]{4}'
         ]
         
     async def __aenter__(self):
@@ -203,7 +449,10 @@ class CyberScanCollector:
             'path_length': len(parsed.path),
             'num_query_params': len(parsed.query.split('&')) if parsed.query else 0,
             'special_chars_count': len(re.findall(r'[%@&\?=]', url)),
-            'suspicious_tld': domain_info.suffix.lower() in [tld.replace('.', '') for tld in self.suspicious_tlds]
+            'suspicious_tld': domain_info.suffix.lower() in [tld.replace('.', '') for tld in self.suspicious_tlds],
+            'domain_length': len(domain_info.domain),
+            'has_port': parsed.port is not None,
+            'is_https': parsed.scheme == 'https'
         }
         
         return analysis
@@ -214,7 +463,9 @@ class CyberScanCollector:
             'ip_addresses': [],
             'has_mx': False,
             'has_txt': False,
-            'ns_servers': []
+            'ns_servers': [],
+            'aaaa_records': [],
+            'cname_records': []
         }
         
         try:
@@ -240,6 +491,18 @@ class CyberScanCollector:
             except:
                 pass
                 
+            try:
+                aaaa = dns.resolver.resolve(domain, 'AAAA')
+                analysis['aaaa_records'] = [str(r) for r in aaaa]
+            except:
+                pass
+                
+            try:
+                cname = dns.resolver.resolve(domain, 'CNAME')
+                analysis['cname_records'] = [str(r) for r in cname]
+            except:
+                pass
+                
         except Exception as e:
             logger.debug(f"DNS error for {domain}: {e}")
             
@@ -251,7 +514,11 @@ class CyberScanCollector:
             'registrar': None,
             'creation_date': None,
             'expiration_date': None,
-            'is_private': False
+            'is_private': False,
+            'name_servers': [],
+            'status': [],
+            'emails': [],
+            'country': None
         }
         
         try:
@@ -282,6 +549,18 @@ class CyberScanCollector:
             if w.registrar:
                 analysis['registrar'] = w.registrar
                 
+            if hasattr(w, 'name_servers') and w.name_servers:
+                analysis['name_servers'] = w.name_servers if isinstance(w.name_servers, list) else [w.name_servers]
+                
+            if hasattr(w, 'status') and w.status:
+                analysis['status'] = w.status if isinstance(w.status, list) else [w.status]
+                
+            if hasattr(w, 'emails') and w.emails:
+                analysis['emails'] = w.emails if isinstance(w.emails, list) else [w.emails]
+                
+            if hasattr(w, 'country') and w.country:
+                analysis['country'] = w.country
+                
             analysis['is_private'] = not bool(w.name or w.org)
                 
         except Exception as e:
@@ -297,7 +576,10 @@ class CyberScanCollector:
             'subject': None,
             'expiry_date': None,
             'days_until_expiry': None,
-            'version': None
+            'version': None,
+            'serial_number': None,
+            'signature_algorithm': None,
+            'subject_alt_names': []
         }
         
         try:
@@ -326,6 +608,11 @@ class CyberScanCollector:
                     
                 analysis['subject'] = dict(x[0] for x in cert['subject'])
                 analysis['version'] = cert.get('version')
+                analysis['serial_number'] = cert.get('serialNumber')
+                analysis['signature_algorithm'] = cert.get('signatureAlgorithm')
+                
+                if 'subjectAltName' in cert:
+                    analysis['subject_alt_names'] = [str(x[1]) for x in cert['subjectAltName']]
                 
                 if 'notAfter' in cert:
                     expiry = datetime.strptime(cert['notAfter'], '%b %d %H:%M:%S %Y %Z')
@@ -349,7 +636,10 @@ class CyberScanCollector:
             'input_count': 0,
             'input_types': [],
             'external_action': False,
-            'action_url': None
+            'action_url': None,
+            'has_file_upload': False,
+            'has_hidden_fields': False,
+            'field_names': []
         }
         
         action = form.get('action', '')
@@ -366,12 +656,21 @@ class CyberScanCollector:
             analysis['input_count'] += 1
             input_type = inp.get('type', 'text')
             analysis['input_types'].append(input_type)
+            name = inp.get('name', '')
+            if name:
+                analysis['field_names'].append(name)
             
             if input_type == 'password':
                 analysis['has_password'] = True
                 
-            name = inp.get('name', '').lower()
-            if any(word in name for word in ['card', 'cvv', 'ccv', 'credit', 'pan']):
+            if input_type == 'file':
+                analysis['has_file_upload'] = True
+                
+            if input_type == 'hidden':
+                analysis['has_hidden_fields'] = True
+                
+            name_lower = name.lower()
+            if any(word in name_lower for word in ['card', 'cvv', 'ccv', 'credit', 'pan', 'cardnumber']):
                 analysis['has_credit_card'] = True
                 
         return analysis
@@ -383,7 +682,11 @@ class CyberScanCollector:
             'src': script_src,
             'external': False,
             'has_malicious_patterns': False,
-            'patterns_found': []
+            'patterns_found': [],
+            'length': 0,
+            'is_minified': False,
+            'has_eval': False,
+            'has_document_write': False
         }
         
         if script_src:
@@ -394,6 +697,17 @@ class CyberScanCollector:
                 
         if script.string:
             content = script.string
+            analysis['length'] = len(content)
+            
+            lines = content.split('\n')
+            if len(lines) < 10 and len(content) > 1000:
+                analysis['is_minified'] = True
+            
+            if 'eval(' in content:
+                analysis['has_eval'] = True
+            if 'document.write' in content:
+                analysis['has_document_write'] = True
+                
             for pattern in self.malicious_patterns:
                 if re.search(pattern, content, re.IGNORECASE):
                     analysis['has_malicious_patterns'] = True
@@ -525,13 +839,20 @@ class CyberScanCollector:
             'brand_impersonation': None,
             'brand_confidence': 'low',
             'risk_score': 0,
-            'has_redirect': False
+            'has_redirect': False,
+            'meta_tags': {},
+            'links_analysis': {},
+            'page_structure': {},
+            'hidden_content': {},
+            'crypto_scam': {},
+            'html_content': ''  
         }
         
         try:
             async with self.session.get(url, allow_redirects=True, ssl=True) as response:
                 redirects = [str(r.url) for r in response.history]
                 html = await response.text()
+                result['html_content'] = html  
                 soup = BeautifulSoup(html, 'html.parser')
                 
                 result['has_redirect'] = len(redirects) > 0
@@ -548,12 +869,27 @@ class CyberScanCollector:
                         f"🎰 ОБНАРУЖЕНО КАЗИНО (уверенность: {casino_analysis['confidence']})"
                     )
 
+                crypto_analysis = await self._detect_crypto_scam(soup, url)
+                result["crypto_scam"] = crypto_analysis
+                if crypto_analysis["is_crypto_scam"]:
+                    result["suspicious_patterns"].append(
+                        f"🪙 КРИПТО-МОШЕННИЧЕСТВО (уверенность: {crypto_analysis['confidence']})"
+                    )
+
                 login_analysis = await self._detect_login_phishing(soup, url)
                 result["login_analysis"] = login_analysis
                 if login_analysis["suspicious_login"]:
                     result["suspicious_patterns"].append(
                         f"Фишинговая страница входа ({login_analysis['brand_detected']})"
                     )
+ 
+                result['meta_tags'] = await self._analyze_meta_tags(soup, url)
+                
+                result['links_analysis'] = await self._analyze_links(soup, url)
+                
+                result['page_structure'] = await self._analyze_page_structure(soup)
+                
+                result['hidden_content'] = await self._detect_hidden_content(soup)
                 
                 title = soup.find('title')
                 if title:
@@ -609,8 +945,15 @@ class CyberScanCollector:
                 scam_count = sum(text_content.count(word) for word in self.scam_keywords)
                 result['content_analysis']['scam_word_count'] = scam_count
                 
+                urgent_words = ['urgent', 'immediately', 'warning', 'alert', 'suspended', 'срочно']
+                urgent_count = sum(text_content.count(word) for word in urgent_words)
+                result['content_analysis']['urgent_word_count'] = urgent_count
+                
                 if scam_count > 5:
                     result['suspicious_patterns'].append(f'Много мошеннических слов ({scam_count})')
+                    
+                if urgent_count > 3:
+                    result['suspicious_patterns'].append(f'Агрессивная риторика ({urgent_count} слов срочности)')
                     
                 risk_score = 0
                 risk_score += len(result['form_analysis']) * 5
@@ -618,6 +961,15 @@ class CyberScanCollector:
                 risk_score += len([f for f in result['form_analysis'] if f['has_password']]) * 20
                 risk_score += len(result['external_resources']) * 2
                 
+                if crypto_analysis.get('is_crypto_scam'):
+                    risk_score += 40
+                    
+                if casino_analysis.get('is_casino'):
+                    risk_score += 30
+                    
+                if result['hidden_content'].get('hidden_elements', 0) > 5:
+                    risk_score += 15
+                    
                 result['risk_score'] = min(100, risk_score)
                 
         except asyncio.TimeoutError:
@@ -669,6 +1021,7 @@ class CyberScanCollector:
         features = {}
         
         level1 = scan_result.get('level1', {})
+        deep_scan = scan_result.get('deep_scan', {})
         
         url_analysis = level1.get('url_analysis', {})
         features['url_length'] = url_analysis.get('url_length', 0)
@@ -692,15 +1045,41 @@ class CyberScanCollector:
         features['ssl_valid'] = int(ssl_analysis.get('valid', False))
         features['ssl_days_until_expiry'] = ssl_analysis.get('days_until_expiry', -1)
         
-        deep_scan = scan_result.get('deep_scan', {})
         if deep_scan:
-            features['num_forms'] = len(deep_scan.get('form_analysis', []))
-            features['num_password_forms'] = len([f for f in deep_scan.get('form_analysis', []) if f.get('has_password')])
-            features['num_external_scripts'] = len([s for s in deep_scan.get('javascript_analysis', []) if s.get('external')])
+            forms = deep_scan.get('form_analysis', [])
+            features['num_forms'] = len(forms)
+            features['num_password_forms'] = len([f for f in forms if f.get('has_password')])
+            
+            scripts = deep_scan.get('javascript_analysis', [])
+            features['num_external_scripts'] = len([s for s in scripts if s.get('external')])
+            
             features['num_external_resources'] = len(deep_scan.get('external_resources', []))
+            
             features['scam_word_count'] = deep_scan.get('content_analysis', {}).get('scam_word_count', 0)
             features['has_brand_impersonation'] = int(deep_scan.get('brand_impersonation') is not None)
             features['num_suspicious_patterns'] = len(deep_scan.get('suspicious_patterns', []))
+            
+            casino = deep_scan.get('casino_analysis', {})
+            features['is_casino'] = int(casino.get('is_casino', False))
+            
+            crypto = deep_scan.get('crypto_scam', {})
+            features['is_crypto_scam'] = int(crypto.get('is_crypto_scam', False))
+            
+            hidden = deep_scan.get('hidden_content', {})
+            features['hidden_elements_count'] = hidden.get('hidden_elements', 0)
+            features['hidden_inputs_count'] = len(hidden.get('hidden_inputs', []))
+            
+            links = deep_scan.get('links_analysis', {})
+            features['external_links_count'] = len(links.get('external_links', []))
+            features['internal_links_count'] = len(links.get('internal_links', []))
+            
+            meta = deep_scan.get('meta_tags', {})
+            features['has_meta_description'] = int(meta.get('description') is not None)
+            features['has_og_tags'] = int(len(meta.get('og_tags', {})) > 0)
+            
+            structure = deep_scan.get('page_structure', {})
+            features['div_ratio'] = structure.get('div_count', 0) / max(structure.get('section_count', 1), 1)
+            
         else:
             features['num_forms'] = 0
             features['num_password_forms'] = 0
@@ -709,6 +1088,15 @@ class CyberScanCollector:
             features['scam_word_count'] = 0
             features['has_brand_impersonation'] = 0
             features['num_suspicious_patterns'] = 0
+            features['is_casino'] = 0
+            features['is_crypto_scam'] = 0
+            features['hidden_elements_count'] = 0
+            features['hidden_inputs_count'] = 0
+            features['external_links_count'] = 0
+            features['internal_links_count'] = 0
+            features['has_meta_description'] = 0
+            features['has_og_tags'] = 0
+            features['div_ratio'] = 0
             
         return features
 
