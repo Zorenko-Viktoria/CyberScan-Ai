@@ -15,6 +15,8 @@ import os
 from collector import CyberScanCollector, scan_url_async
 from ai_model import CyberScanAI
 from monitor import monitor, start_monitor_background 
+from ai_model import anti_phishing_ai
+from ai_auto_trainer import ai_trainer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -48,6 +50,16 @@ def init_db():
                   is_malicious INTEGER DEFAULT 0,
                   first_seen DATETIME DEFAULT CURRENT_TIMESTAMP)''')
     
+    c.execute('''CREATE TABLE IF NOT EXISTS ai_training_history
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  training_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                  num_samples INTEGER,
+                  accuracy REAL,
+                  precision REAL,
+                  recall REAL,
+                  f1_score REAL,
+                  model_path TEXT)''')
+    
     c.execute('CREATE INDEX IF NOT EXISTS idx_scans_url ON scans(url)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_scans_timestamp ON scans(timestamp)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_cache_expires ON scan_cache(expires_at)')
@@ -58,31 +70,80 @@ def init_db():
 
 init_db()
 
+ai_training_task = None
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 Starting CyberScan AI application...")
     
     try:
         ai_model.load_model()
-        logger.info("✅ AI model loaded successfully")
+        logger.info("✅ CyberScanAI model loaded successfully")
     except Exception as e:
-        logger.warning(f"⚠️ No pre-trained model found, will train on first scan: {e}")
+        logger.warning(f"⚠️ No pre-trained model found: {e}")
+    
+    try:
+        anti_phishing_ai.load_model()
+        logger.info("✅ Anti-Phishing AI model loaded successfully")
+    except Exception as e:
+        logger.warning(f"⚠️ No anti-phishing model found: {e}")
+        logger.info("🔄 Training initial anti-phishing model...")
+        metrics = anti_phishing_ai.train_anti_phishing(use_synthetic=True)
+        anti_phishing_ai.save_model()
+        logger.info(f"✅ Initial anti-phishing model trained with accuracy: {metrics['accuracy']:.3f}")
     
     asyncio.create_task(start_monitor_background())
     logger.info("🚀 Background monitor started")
     
+    global ai_training_task
+    ai_training_task = asyncio.create_task(auto_ai_training_loop())
+    logger.info("🧠 Auto AI training loop started (every 24 hours)")
+    
     yield
+    
+    if ai_training_task:
+        ai_training_task.cancel()
     
     logger.info("👋 Shutting down CyberScan AI...")
 
 app = FastAPI(
     title="CyberScan AI",
     description="Advanced website security scanner with ML",
-    version="1.0.0",
+    version="2.0.0", 
     lifespan=lifespan
 )
 
 templates = Jinja2Templates(directory="templates")
+
+
+async def auto_ai_training_loop():
+    """
+    Автоматический цикл обучения AI модели
+    Запускается раз в 24 часа
+    """
+    while True:
+        try:
+            await asyncio.sleep(24 * 3600)
+            
+            logger.info("="*60)
+            logger.info("🤖 AUTO AI TRAINING CYCLE STARTED")
+            logger.info("="*60)
+            
+            metrics = await ai_trainer.auto_train()
+            
+            if metrics:
+                logger.info(f"✅ Auto training successful!")
+                logger.info(f"   Accuracy: {metrics['accuracy']:.3f}")
+                logger.info(f"   Samples: {metrics.get('samples', 0)}")
+            else:
+                logger.info("⏸️ Auto training skipped (not enough data)")
+            
+        except asyncio.CancelledError:
+            logger.info("🛑 Auto AI training loop cancelled")
+            break
+        except Exception as e:
+            logger.error(f"❌ Error in auto training loop: {e}")
+            await asyncio.sleep(3600) 
 
 
 def get_cached_result(url: str, max_age_hours: int = 24) -> Optional[dict]:
@@ -354,6 +415,7 @@ def prepare_result_for_template(result: dict) -> dict:
         "detailed_report": detailed_report
     }
 
+
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     """Главная страница"""
@@ -606,6 +668,7 @@ async def api_history(limit: int = 50, offset: int = 0):
 
 @app.post("/api/train")
 async def api_train_model():
+    """Ручное обучение основной модели (опционально)"""
     try:
         conn = sqlite3.connect('cyberscan.db')
         c = conn.cursor()
@@ -646,6 +709,7 @@ async def api_train_model():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/api/illegal-sites")
 async def get_illegal_sites(category: Optional[str] = None, limit: int = 100, offset: int = 0):
     """Получение списка отслеживаемых нелегальных сайтов"""
@@ -683,17 +747,118 @@ async def monitor_page(request: Request):
     """Страница мониторинга нелегальных сайтов"""
     try:
         stats = monitor.get_statistics()
-        return templates.TemplateResponse("monitor.html", {
+        return templates.TemplateResponse("index.html", {
             "request": request,
             "statistics": stats
         })
     except Exception as e:
         logger.error(f"Error loading monitor page: {e}")
-        return templates.TemplateResponse("monitor.html", {
+        return templates.TemplateResponse("index.html", {
             "request": request,
             "statistics": {"total": 0, "by_category": {}},
             "error": str(e)
         })
+
+
+@app.get("/api/ai/anti-phishing/predict")
+async def ai_anti_phishing_predict(url: str):
+    """Предсказание фишинга с помощью Anti-Phishing AI"""
+    try:
+        from collector import scan_url_async
+        
+        scan_result = await scan_url_async(url)
+        
+        html_content = None
+        if 'deep_scan' in scan_result and 'html_content' in scan_result:
+            html_content = scan_result.get('html_content')
+        
+
+        prediction = anti_phishing_ai.predict_phishing(scan_result, html_content)
+        
+        return JSONResponse({
+            "success": True,
+            "url": url,
+            "prediction": prediction
+        })
+        
+    except Exception as e:
+        logger.error(f"Anti-phishing prediction error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ai/training-stats")
+async def get_ai_training_stats():
+    """Статистика обучения AI модели"""
+    try:
+        stats = ai_trainer.get_training_stats()
+        return JSONResponse({
+            'success': True,
+            'stats': stats
+        })
+    except Exception as e:
+        logger.error(f"Error getting AI stats: {e}")
+        return JSONResponse({
+            'success': False,
+            'error': str(e)
+        }, status_code=500)
+
+@app.post("/api/ai/train-now")
+async def train_ai_now(secret: str = ""):
+    """Принудительное обучение (только с секретным ключом)"""
+    if secret != "cyberscan_ai_2026":
+        raise HTTPException(status_code=403, detail="Forbidden")
+    
+    try:
+        logger.info("🚀 Manual AI training triggered")
+        metrics = await ai_trainer.auto_train(force=True)
+        
+        if metrics:
+            return JSONResponse({
+                'success': True,
+                'message': 'AI model trained successfully',
+                'metrics': {
+                    'accuracy': metrics.get('accuracy', 0),
+                    'precision': metrics.get('precision', 0),
+                    'recall': metrics.get('recall', 0),
+                    'f1': metrics.get('f1', 0),
+                    'samples': metrics.get('samples', 0)
+                }
+            })
+        else:
+            return JSONResponse({
+                'success': False,
+                'message': 'Training failed or not enough data'
+            })
+            
+    except Exception as e:
+        logger.error(f"Manual training error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ai/model-info")
+async def get_ai_model_info():
+    """Информация о текущей AI модели"""
+    try:
+        info = {
+            'model_loaded': anti_phishing_ai.model is not None,
+            'features_count': len(anti_phishing_ai.phishing_features),
+            'features_sample': anti_phishing_ai.phishing_features[:10],
+            'brands_supported': list(anti_phishing_ai.brands.keys()),
+            'model_path': anti_phishing_ai.model_path
+        }
+        
+        stats = ai_trainer.get_training_stats()
+        info['training_stats'] = stats
+        
+        if anti_phishing_ai.model:
+            info['model_type'] = 'Ensemble (RF + GB + NN)'
+        
+        return JSONResponse({
+            'success': True,
+            'info': info
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting model info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
